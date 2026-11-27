@@ -558,13 +558,11 @@
     return span;
   }
 
-  function clearEditorFormat(range) {
-    const fragment = range.extractContents();
-    window.__fmtDbg = Object.assign(window.__fmtDbg || {}, { fragKids: fragment.childNodes.length, afterExtract: document.querySelector('[data-editor]:focus') ? document.querySelector('[data-editor]:focus').innerHTML : null });
+  /* 선택 구간을 평문으로 바꾸는 예비 경로 (execCommand를 쓸 수 없는 환경) */
+  function replaceRangeWithPlain(range) {
     const holder = document.createElement('div');
-    holder.appendChild(fragment);
+    holder.appendChild(range.cloneContents());
     const parts = richTextToPlain(holder.innerHTML).split('\n');
-    window.__fmtDbg.holder = holder.innerHTML;
     const next = document.createDocumentFragment();
     const nodes = [];
     parts.forEach((line, index) => {
@@ -579,11 +577,26 @@
         nodes.push(textNode);
       }
     });
-    window.__fmtDbg.nodes = nodes.length;
+    range.deleteContents();
     if (!nodes.length) return;
+    range.insertNode(next);
     const first = nodes[0];
     const last = nodes[nodes.length - 1];
-    range.insertNode(next);
+    // 방금 넣은 글자만 남은 인라인 요소는 벗겨서 진짜 평문으로 만든다.
+    let el = first.parentNode;
+    while (el && el.parentNode) {
+      const parent = el.parentNode;
+      if (!/^(B|STRONG|I|EM|U|SPAN|FONT)$/i.test(el.tagName)) break;
+      const others = Array.from(el.childNodes)
+        .filter((child) => nodes.indexOf(child) < 0)
+        .map((child) => child.textContent || '')
+        .join('')
+        .trim();
+      if (others) break;
+      while (el.firstChild) parent.insertBefore(el.firstChild, el);
+      parent.removeChild(el);
+      el = parent;
+    }
     const sel = window.getSelection();
     if (sel && first.parentNode && last.parentNode) {
       try {
@@ -596,6 +609,21 @@
     }
   }
 
+  function clearEditorFormat(editor, range) {
+    const sel = window.getSelection();
+    if (sel) {
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+    let cleaned = false;
+    try {
+      cleaned = !!(document.execCommand && document.execCommand('removeFormat', false, null));
+    } catch (err) {
+      cleaned = false;
+    }
+    if (!cleaned) replaceRangeWithPlain(range);
+  }
+
   function applyFormat(fmt, value, editor) {
     if (!editor) return;
     editor.focus();
@@ -605,10 +633,8 @@
       return;
     }
     if (fmt === 'clear') {
-      window.__fmtDbg = { fmt, collapsed: range.collapsed, common: range.commonAncestorContainer.nodeName, inEditor: editor.contains(range.commonAncestorContainer), html: editor.innerHTML };
       if (range.collapsed) { toast('서식을 지울 글자를 먼저 선택해 주세요.'); return; }
-      clearEditorFormat(range);
-      window.__fmtDbg.after = editor.innerHTML;
+      clearEditorFormat(editor, range);
     } else if (fmt === 'bold') toggleTag(editor, range, 'b');
     else if (fmt === 'italic') toggleTag(editor, range, 'i');
     else if (fmt === 'underline') toggleTag(editor, range, 'u');
