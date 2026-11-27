@@ -853,6 +853,7 @@
     bindEvents();
     hydrateAuthorFields();
     initNotifyState();
+    registerNotifyWorker();
     [dom.memoText, dom.noticeText].forEach((editor) => { if (editor) updateEditorEmpty(editor); });
 
     if (!isConfigured()) {
@@ -1287,6 +1288,14 @@
     return notifySupported() ? window.Notification.permission : 'unsupported';
   }
 
+  /* 안드로이드 크롬처럼 페이지의 new Notification()을 막는 브라우저를 위해 서비스 워커를 준비한다. */
+  function registerNotifyWorker() {
+    if (!navigator.serviceWorker || !window.isSecureContext) return;
+    try {
+      navigator.serviceWorker.register('sw.js').catch(() => {});
+    } catch (err) { /* 등록 실패해도 화면 안 배너로 알린다 */ }
+  }
+
   function initNotifyState() {
     const saved = localStorage.getItem(LS.notify) === '1';
     state.notifyEnabled = saved && notifyPermission() === 'granted';
@@ -1391,9 +1400,18 @@
         if (memoId) focusMemo(memoId);
         note.close();
       };
+      return;
     } catch (err) {
-      // 모바일 크롬처럼 new Notification()을 허용하지 않는 브라우저는 화면 안 배너로만 알린다.
+      // 안드로이드 크롬처럼 new Notification()을 허용하지 않는 브라우저는 서비스 워커로 알린다.
     }
+    if (!navigator.serviceWorker || !navigator.serviceWorker.ready) return;
+    navigator.serviceWorker.ready
+      .then((registration) => registration.showNotification(title, {
+        body: body || '내용 없음',
+        tag: memoId ? `office-${memoId}` : 'office-notify-on',
+        data: { url: location.href, memoId: memoId || '' }
+      }))
+      .catch(() => { /* 화면 안 배너로 이미 알렸다 */ });
   }
 
   /* 초기 로딩 이후 새로 들어온 보고·완료 소식만 골라 알린다 */
