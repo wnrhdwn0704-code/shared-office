@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>합동 비서실</title>
+  <meta name="description" content="지시·보고·자료를 한곳에서 주고받는 합동 비서실" />
+  <meta name="theme-color" content="#f5f6f8" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#0e1116" media="(prefers-color-scheme: dark)" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%230f766e'/%3E%3Cpath d='M20 23h24M20 32h24M20 41h15' stroke='white' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ===================== 시작 로딩 ===================== -->
+  <div id="boot" class="boot">
+    <span class="spinner" aria-hidden="true"></span>
+    <p>비서실에 연결하는 중…</p>
+  </div>
+
+  <!-- ===================== 잠금 화면 ===================== -->
+  <div id="lock-screen" class="lock-screen" hidden>
+    <main class="lock-card">
+      <div class="lock-brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M7 3.5h10a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2Z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg>
+        </span>
+        <h1>합동 비서실</h1>
+        <p>지시와 보고, 자료를 한곳에서.</p>
+      </div>
+
+      <form id="unlock-form" class="lock-form" autocomplete="off" novalidate>
+        <label class="field">
+          <span class="field-label">비밀번호</span>
+          <input id="lock-password" class="input" type="password" inputmode="text" autocomplete="current-password" placeholder="비서실 비밀번호를 입력하세요" />
+        </label>
+        <p id="lock-error" class="form-error" role="alert" hidden></p>
+        <button id="unlock-button" class="btn primary block" type="submit">입장하기</button>
+      </form>
+
+      <div id="config-warning" class="notice" hidden>
+        <strong>설정이 아직 필요합니다</strong>
+        <p><code>firebase-config.js</code>에 Firebase 콘솔의 <code>firebaseConfig</code> 값을 넣어 주세요. 자세한 순서는 <code>README.md</code>에 있습니다.</p>
+      </div>
+
+      <p class="lock-note">비밀번호는 서버로 보내지 않고, 이 브라우저에서 해시한 값만 사용합니다.</p>
+      <p class="privacy-note">공개 페이지입니다. 이름·전화번호·주소·계정 비밀번호 같은 개인정보는 올리지 마세요.</p>
+    </main>
+  </div>
+
+  <!-- ===================== 앱 ===================== -->
+  <div id="app" hidden>
+    <header class="appbar">
+      <div class="appbar-inner">
+        <div class="appbar-brand">
+          <span class="brand-mark small" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M7 3.5h10a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2Z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg>
+          </span>
+          <div class="appbar-title">
+            <strong>합동 비서실</strong>
+            <span id="connection" class="conn is-off"><i class="dot" aria-hidden="true"></i><span id="connection-text">연결 중…</span></span>
+          </div>
+        </div>
+        <button id="lock-button" class="btn ghost small" type="button">잠금</button>
+      </div>
+
+      <nav class="tabbar" role="tablist" aria-label="비서실 메뉴">
+        <button type="button" class="tab is-active" role="tab" id="tab-memos" data-tab="memos" aria-selected="true" aria-controls="panel-memos">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.5h10a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2Z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg>
+          <span>공유 메모</span>
+          <em id="memo-badge" class="badge" hidden></em>
+        </button>
+        <button type="button" class="tab" role="tab" id="tab-images" data-tab="images" aria-selected="false" aria-controls="panel-images" tabindex="-1">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="m5.2 17.2 4.3-4.6L13 16l2.2-2.3 3.6 3.8"/></svg>
+          <span>이미지</span>
+        </button>
+        <button type="button" class="tab" role="tab" id="tab-boards" data-tab="boards" aria-selected="false" aria-controls="panel-boards" tabindex="-1">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4.5" y="4.5" width="15" height="15" rx="2.5"/><path d="M9 4.5h6v3.2H9z"/><path d="M8.5 12h7M8.5 15.5h4.5"/></svg>
+          <span>보드</span>
+        </button>
+        <button type="button" class="tab" role="tab" id="tab-ai" data-tab="ai" aria-selected="false" aria-controls="panel-ai" tabindex="-1">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.2v2.6M12 18.2v2.6M4.4 7.6l2.2 1.3M17.4 15.1l2.2 1.3M4.4 16.4l2.2-1.3M17.4 8.9l2.2-1.3"/><circle cx="12" cy="12" r="3.2"/></svg>
+          <span>AI 연동</span>
+        </button>
+      </nav>
+    </header>
+
+    <main class="wrap">
+      <p class="privacy-banner">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="9.5" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg>
+        <span>이 페이지는 공개 주소입니다. <strong>이름·전화번호·주소·계정 비밀번호</strong> 같은 개인정보는 올리지 마세요.</span>
+      </p>
+
+      <!-- ---------- 공유 메모 ---------- -->
+      <section id="panel-memos" class="panel" role="tabpanel" aria-labelledby="tab-memos">
+        <form id="memo-form" class="card composer" autocomplete="off">
+          <div class="composer-top">
+            <label class="field">
+              <span class="field-label">작성자</span>
+              <input id="memo-author" class="input" type="text" maxlength="20" placeholder="이름 또는 이니셜" />
+            </label>
+            <label class="field">
+              <span class="field-label">태그</span>
+              <select id="memo-tag" class="input">
+                <option value="지시">지시</option>
+                <option value="요청">요청</option>
+                <option value="보고" selected>보고</option>
+                <option value="메모">메모</option>
+              </select>
+            </label>
+          </div>
+          <label class="field">
+            <span class="sr-only">메모 내용</span>
+            <textarea id="memo-text" class="input textarea" rows="3" maxlength="2000" placeholder="지시·요청·보고 내용을 적어 주세요."></textarea>
+          </label>
+          <div class="composer-bottom">
+            <span class="hint">Ctrl(⌘) + Enter 로도 등록됩니다.</span>
+            <button id="memo-submit" class="btn primary" type="submit">등록</button>
+          </div>
+        </form>
+
+        <div class="list-head">
+          <h2>공유 메모</h2>
+          <div id="memo-filter" class="chips" role="group" aria-label="메모 필터"></div>
+        </div>
+
+        <div id="memo-list" class="memo-list"></div>
+        <p id="memo-empty" class="empty" hidden></p>
+      </section>
+
+      <!-- ---------- 이미지 ---------- -->
+      <section id="panel-images" class="panel" role="tabpanel" aria-labelledby="tab-images" hidden>
+        <form id="image-form" class="card composer" autocomplete="off">
+          <label id="image-drop" class="dropzone">
+            <span class="dropzone-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="m5.2 17.2 4.3-4.6L13 16l2.2-2.3 3.6 3.8"/></svg>
+            </span>
+            <span class="dropzone-title">이미지를 끌어다 놓거나 눌러서 선택</span>
+            <span class="dropzone-sub">여러 장 선택 가능 · 긴 변 1280px, JPEG로 자동 경량화</span>
+            <input id="image-files" class="sr-only" type="file" accept="image/*" multiple />
+          </label>
+
+          <p id="image-selected" class="selected-note" hidden></p>
+
+          <div class="composer-top">
+            <label class="field">
+              <span class="field-label">작성자</span>
+              <input id="image-author" class="input" type="text" maxlength="20" placeholder="이름 또는 이니셜" />
+            </label>
+            <label class="field">
+              <span class="field-label">제목 (선택)</span>
+              <input id="image-title" class="input" type="text" maxlength="60" placeholder="예: 12월 포스터 시안" />
+            </label>
+          </div>
+
+          <div class="composer-bottom">
+            <span class="hint" id="image-progress" role="status"></span>
+            <button id="image-submit" class="btn primary" type="submit">업로드</button>
+          </div>
+        </form>
+
+        <div class="list-head">
+          <h2>이미지</h2>
+          <span class="hint">클릭하면 크게 보고 내려받을 수 있습니다.</span>
+        </div>
+
+        <div id="image-list" class="image-grid"></div>
+        <p id="image-empty" class="empty" hidden></p>
+      </section>
+
+      <!-- ---------- 보드 (설문 / 블로그) ---------- -->
+      <section id="panel-boards" class="panel" role="tabpanel" aria-labelledby="tab-boards" hidden>
+        <div class="segmented" role="tablist" aria-label="보드 종류">
+          <button id="board-sub-survey" type="button" class="segment is-active" role="tab" aria-selected="true" aria-controls="board-survey">설문 현황</button>
+          <button id="board-sub-blog" type="button" class="segment" role="tab" aria-selected="false" aria-controls="board-blog">블로그 보드</button>
+        </div>
+
+        <div id="board-survey" class="board" role="tabpanel" aria-labelledby="board-sub-survey">
+          <form id="survey-form" class="card composer" autocomplete="off">
+            <div class="form-grid">
+              <label class="field span-2">
+                <span class="field-label">설문 제목 *</span>
+                <input id="survey-title" class="input" type="text" maxlength="80" placeholder="예: 12월 콘텐츠 만족도 조사" />
+              </label>
+              <label class="field">
+                <span class="field-label">마감일</span>
+                <input id="survey-deadline" class="input" type="date" />
+              </label>
+              <label class="field">
+                <span class="field-label">상태</span>
+                <select id="survey-status" class="input">
+                  <option value="진행전">진행전</option>
+                  <option value="진행중" selected>진행중</option>
+                  <option value="완료">완료</option>
+                </select>
+              </label>
+              <label class="field span-2">
+                <span class="field-label">담당</span>
+                <input id="survey-assignee" class="input" type="text" maxlength="20" placeholder="담당자" />
+              </label>
+              <label class="field span-2">
+                <span class="field-label">메모</span>
+                <input id="survey-note" class="input" type="text" maxlength="120" placeholder="참고 사항" />
+              </label>
+            </div>
+            <div class="composer-bottom">
+              <span class="hint">제목은 필수입니다.</span>
+              <button class="btn primary" type="submit">추가</button>
+            </div>
+          </form>
+
+          <div class="list-head">
+            <h2>설문 현황</h2>
+            <div id="survey-filter" class="chips" role="group" aria-label="설문 상태 필터"></div>
+          </div>
+          <div id="survey-list" class="board-list"></div>
+          <p id="survey-empty" class="empty" hidden></p>
+        </div>
+
+        <div id="board-blog" class="board" role="tabpanel" aria-labelledby="board-sub-blog" hidden>
+          <form id="blog-form" class="card composer" autocomplete="off">
+            <div class="form-grid">
+              <label class="field span-2">
+                <span class="field-label">글 제목 *</span>
+                <input id="blog-title" class="input" type="text" maxlength="80" placeholder="예: 12월 1주차 기획기사" />
+              </label>
+              <label class="field">
+                <span class="field-label">플랫폼</span>
+                <input id="blog-platform" class="input" type="text" maxlength="30" placeholder="예: 네이버 블로그" list="platform-list" />
+                <datalist id="platform-list">
+                  <option value="네이버 블로그"></option>
+                  <option value="티스토리"></option>
+                  <option value="브런치"></option>
+                  <option value="인스타그램"></option>
+                  <option value="유튜브"></option>
+                </datalist>
+              </label>
+              <label class="field">
+                <span class="field-label">상태</span>
+                <select id="blog-status" class="input">
+                  <option value="기획">기획</option>
+                  <option value="작성중" selected>작성중</option>
+                  <option value="발행완료">발행완료</option>
+                </select>
+              </label>
+              <label class="field span-2">
+                <span class="field-label">작성자</span>
+                <input id="blog-author" class="input" type="text" maxlength="20" placeholder="작성자" />
+              </label>
+              <label class="field span-2">
+                <span class="field-label">메모</span>
+                <input id="blog-note" class="input" type="text" maxlength="120" placeholder="참고 사항" />
+              </label>
+            </div>
+            <div class="composer-bottom">
+              <span class="hint">제목은 필수입니다.</span>
+              <button class="btn primary" type="submit">추가</button>
+            </div>
+          </form>
+
+          <div class="list-head">
+            <h2>블로그 보드</h2>
+            <div id="blog-filter" class="chips" role="group" aria-label="블로그 상태 필터"></div>
+          </div>
+          <div id="blog-list" class="board-list"></div>
+          <p id="blog-empty" class="empty" hidden></p>
+        </div>
+      </section>
+
+      <!-- ---------- AI 연동 ---------- -->
+      <section id="panel-ai" class="panel" role="tabpanel" aria-labelledby="tab-ai" hidden>
+        <div id="ai-content" class="ai"></div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>합동 비서실</span>
+      <span>GitHub Pages + Firebase Realtime Database</span>
+    </footer>
+  </div>
+
+  <!-- ===================== 이미지 모달 ===================== -->
+  <dialog id="image-modal" class="modal" aria-labelledby="modal-title">
+    <div class="modal-head">
+      <h2 id="modal-title">이미지</h2>
+      <button id="modal-close" class="icon-btn" type="button" aria-label="닫기">✕</button>
+    </div>
+    <div class="modal-body">
+      <img id="modal-image" alt="" />
+    </div>
+    <div class="modal-foot">
+      <p id="modal-meta" class="muted"></p>
+      <a id="modal-download" class="btn primary small" download>다운로드</a>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <noscript>
+    <p style="padding:24px; text-align:center;">이 페이지를 사용하려면 브라우저에서 JavaScript를 켜 주세요.</p>
+  </noscript>
+
+  <!-- Firebase SDK (compat) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+  <script src="firebase-config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
