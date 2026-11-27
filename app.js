@@ -558,70 +558,63 @@
     return span;
   }
 
-  /* 선택 구간을 평문으로 바꾸는 예비 경로 (execCommand를 쓸 수 없는 환경) */
-  function replaceRangeWithPlain(range) {
+  const INLINE_FORMAT_TAG = /^(B|STRONG|I|EM|U|SPAN|FONT)$/i;
+
+  /* 방금 넣은 글자가 인라인 서식 요소 안에 들어갔으면, 그 요소를 쪼개 글자만 밖으로 꺼낸다. */
+  function liftOutOfFormatting(node, editor) {
+    while (node && node.parentNode && node.parentNode !== editor) {
+      const parent = node.parentNode;
+      if (!INLINE_FORMAT_TAG.test(parent.tagName)) return;
+      const grand = parent.parentNode;
+      if (!grand) return;
+      const after = parent.cloneNode(false);
+      let sibling = node.nextSibling;
+      while (sibling) {
+        const next = sibling.nextSibling;
+        after.appendChild(sibling);
+        sibling = next;
+      }
+      if (after.firstChild) grand.insertBefore(after, parent.nextSibling);
+      grand.insertBefore(node, parent.nextSibling);
+      if (!parent.firstChild) grand.removeChild(parent);
+    }
+  }
+
+  /* 선택 구간의 서식을 벗겨 평문으로 바꾼다 (선택 밖 글자의 서식은 그대로 둔다) */
+  function clearEditorFormat(editor, range) {
     const holder = document.createElement('div');
     holder.appendChild(range.cloneContents());
-    const parts = richTextToPlain(holder.innerHTML).split('\n');
-    const next = document.createDocumentFragment();
+    const lines = richTextToPlain(holder.innerHTML).split('\n');
+    const fragment = document.createDocumentFragment();
     const nodes = [];
-    parts.forEach((line, index) => {
+    lines.forEach((line, index) => {
       if (index) {
         const br = document.createElement('br');
-        next.appendChild(br);
+        fragment.appendChild(br);
         nodes.push(br);
       }
       if (line) {
         const textNode = document.createTextNode(line);
-        next.appendChild(textNode);
+        fragment.appendChild(textNode);
         nodes.push(textNode);
       }
     });
     range.deleteContents();
     if (!nodes.length) return;
-    range.insertNode(next);
+    range.insertNode(fragment);
+    nodes.forEach((node) => liftOutOfFormatting(node, editor));
     const first = nodes[0];
     const last = nodes[nodes.length - 1];
-    // 방금 넣은 글자만 남은 인라인 요소는 벗겨서 진짜 평문으로 만든다.
-    let el = first.parentNode;
-    while (el && el.parentNode) {
-      const parent = el.parentNode;
-      if (!/^(B|STRONG|I|EM|U|SPAN|FONT)$/i.test(el.tagName)) break;
-      const others = Array.from(el.childNodes)
-        .filter((child) => nodes.indexOf(child) < 0)
-        .map((child) => child.textContent || '')
-        .join('')
-        .trim();
-      if (others) break;
-      while (el.firstChild) parent.insertBefore(el.firstChild, el);
-      parent.removeChild(el);
-      el = parent;
-    }
     const sel = window.getSelection();
     if (sel && first.parentNode && last.parentNode) {
       try {
-        const after = document.createRange();
-        after.setStartBefore(first);
-        after.setEndAfter(last);
+        const afterRange = document.createRange();
+        afterRange.setStartBefore(first);
+        afterRange.setEndAfter(last);
         sel.removeAllRanges();
-        sel.addRange(after);
+        sel.addRange(afterRange);
       } catch (err) { /* 무시 */ }
     }
-  }
-
-  function clearEditorFormat(editor, range) {
-    const sel = window.getSelection();
-    if (sel) {
-      sel.removeAllRanges();
-      sel.addRange(range);
-    }
-    let cleaned = false;
-    try {
-      cleaned = !!(document.execCommand && document.execCommand('removeFormat', false, null));
-    } catch (err) {
-      cleaned = false;
-    }
-    if (!cleaned) replaceRangeWithPlain(range);
   }
 
   function applyFormat(fmt, value, editor) {
