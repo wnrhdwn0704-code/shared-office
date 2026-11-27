@@ -196,6 +196,44 @@
     return base;
   }
 
+  /* 다시 그릴 때 입력 중이던 칸과 커서 위치를 되살린다 (다른 사람의 글이 실시간으로 들어와도 타이핑이 끊기지 않게) */
+  const FOCUS_ATTRS = ['data-reply-text', 'data-reply-author', 'data-reply-edit-text', 'data-edit-text', 'data-notice-reply-text'];
+
+  function rememberFocus(root) {
+    const el = document.activeElement;
+    if (!root || !el || !root.contains(el) || !el.matches('input, textarea, select')) return null;
+    let selector = '';
+    for (const attr of FOCUS_ATTRS) {
+      const value = el.getAttribute(attr);
+      if (value) {
+        selector = `${el.tagName.toLowerCase()}[${attr}="${value}"]`;
+        break;
+      }
+    }
+    if (!selector) {
+      const field = el.getAttribute('data-field');
+      if (field) selector = `${el.tagName.toLowerCase()}[data-field="${field}"]`;
+    }
+    if (!selector) return null;
+    let start = null;
+    let end = null;
+    try {
+      start = el.selectionStart;
+      end = el.selectionEnd;
+    } catch (err) { /* select에는 selectionStart가 없다 */ }
+    return { selector, start, end };
+  }
+
+  function restoreFocus(root, saved) {
+    if (!root || !saved) return;
+    const el = root.querySelector(saved.selector);
+    if (!el) return;
+    el.focus();
+    if (typeof saved.start === 'number') {
+      try { el.setSelectionRange(saved.start, saved.end); } catch (err) { /* 무시 */ }
+    }
+  }
+
   let toastTimer = 0;
   function toast(message) {
     if (!dom.toast) return;
@@ -1152,6 +1190,7 @@
 
   function renderMemos() {
     if (!dom.memoList) return;
+    const savedFocus = rememberFocus(dom.memoList);
     renderMemoFilters();
     const all = Object.entries(state.memos || {})
       .filter(([, memo]) => memo && typeof memo === 'object')
@@ -1171,6 +1210,7 @@
       ? '이 필터에 해당하는 글이 없습니다.'
       : '아직 공유된 업무가 없습니다. 위에서 첫 글을 남겨 보세요.';
     visible.forEach((memo) => dom.memoList.append(memoCard(memo)));
+    restoreFocus(dom.memoList, savedFocus);
 
     const openCount = all.filter((memo) => !memo.done).length;
     dom.memoBadge.textContent = openCount ? String(openCount) : '';
@@ -1948,11 +1988,13 @@
 
   function renderNotices() {
     if (!dom.noticeList) return;
+    const savedFocus = rememberFocus(dom.noticeList);
     const all = noticeList();
     dom.noticeList.textContent = '';
     dom.noticeEmpty.hidden = all.length > 0;
     dom.noticeEmpty.textContent = '아직 등록된 공지가 없습니다. 위에서 첫 공지를 남겨 보세요.';
     all.forEach((item) => dom.noticeList.append(noticeItem(item)));
+    restoreFocus(dom.noticeList, savedFocus);
   }
 
   function noticeItem(item) {
