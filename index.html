@@ -113,10 +113,25 @@
           </div>
           <label class="field">
             <span class="sr-only">메모 내용</span>
-            <textarea id="memo-text" class="input textarea" rows="3" maxlength="2000" placeholder="지시·요청·보고 내용을 적어 주세요."></textarea>
+            <textarea id="memo-text" class="input textarea" rows="3" maxlength="2000" placeholder="지시·요청·보고 내용을 적어 주세요. 파일만 첨부해도 등록됩니다."></textarea>
           </label>
+
+          <!-- 파일 첨부 (이미지·문서·압축 파일) -->
+          <div id="memo-attach" class="attach">
+            <div class="attach-bar">
+              <button id="memo-attach-button" class="btn ghost small" type="button">
+                <svg class="attach-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 7.5 8.9 14a2.5 2.5 0 0 0 3.5 3.5l6.3-6.3a4.5 4.5 0 0 0-6.4-6.4L6 11.2a6.5 6.5 0 0 0 9.2 9.2l4.6-4.6"/></svg>
+                파일 첨부
+              </button>
+              <span class="hint attach-hint">이미지·문서(HWP·PDF·XLSX·PPTX·DOCX)·압축 파일 · 개당 5MB, 합계 15MB까지<br />끌어다 놓거나(Ctrl+V) 붙여넣어도 됩니다.</span>
+              <input id="memo-files" class="sr-only" type="file" multiple />
+            </div>
+            <ul id="memo-file-list" class="attach-list" aria-label="첨부할 파일 목록" hidden></ul>
+            <p id="memo-file-note" class="attach-note" role="status" hidden></p>
+          </div>
+
           <div class="composer-bottom">
-            <span class="hint">Ctrl(⌘) + Enter 로도 등록됩니다.</span>
+            <span id="memo-hint" class="hint">Ctrl(⌘) + Enter 로도 등록됩니다.</span>
             <button id="memo-submit" class="btn primary" type="submit">등록</button>
           </div>
         </form>

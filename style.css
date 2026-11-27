@@ -940,6 +940,209 @@ select.input {
   font-weight: 600;
 }
 
+/* ---------- 첨부 파일 ---------- */
+.attach {
+  display: grid;
+  gap: 8px;
+}
+
+.attach-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+}
+
+.attach-icon {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.attach-hint {
+  line-height: 1.45;
+}
+
+.composer.is-dragover {
+  outline: 2px dashed var(--accent);
+  outline-offset: -6px;
+  background: var(--accent-soft);
+}
+
+.attach-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.attach-item {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.attach-thumb {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.attach-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.attach-ext {
+  color: var(--accent-strong);
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.attach-name {
+  overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attach-body {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.attach-size {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.attach-note {
+  padding: 7px 10px;
+  border: 1px solid var(--warn-line);
+  border-radius: 9px;
+  background: var(--warn-soft);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.attach-note.is-ok {
+  border-color: var(--line);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.memo-files {
+  display: grid;
+  gap: 8px;
+}
+
+.memo-file-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.memo-file-thumb {
+  width: 96px;
+  height: 96px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  cursor: zoom-in;
+}
+
+.memo-file-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.memo-file-thumb .thumb-loading {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.memo-file-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.file-badge {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--accent-strong);
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.memo-file-body {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.memo-file-name {
+  overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memo-file-size {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.memo-file-row .btn {
+  flex: none;
+  margin-left: auto;
+}
+
+.memo.is-done .memo-files {
+  opacity: 0.7;
+}
+
 .image-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
@@ -1424,6 +1627,15 @@ select.input {
   .image-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
+  }
+
+  .memo-file-thumb {
+    width: 76px;
+    height: 76px;
+  }
+
+  .attach-item {
+    grid-template-columns: 30px minmax(0, 1fr) auto;
   }
 
   .segmented {

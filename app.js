@@ -3,7 +3,7 @@
  * GitHub Pages + Firebase Realtime Database
  *
  * 데이터 위치: /office/{ROOM_KEY}/
- *   memos, images, surveys, blogs
+ *   memos, memoFiles, images, surveys, blogs
  */
 (() => {
   'use strict';
@@ -24,7 +24,16 @@
 
   const MAX_IMAGE_SIDE = 1280;          // 긴 변 기준 리사이즈
   const JPEG_QUALITY = 0.85;            // 기본 압축 품질
-  const MAX_WRITE_BYTES = 200 * 1024;   // Realtime DB 단일 쓰기 한도(256KB)를 넘지 않게
+  const MAX_WRITE_BYTES = 200 * 1024;   // 이미지 한 장이 가볍게 유지되도록
+
+  /* 메모 첨부 파일 */
+  const MAX_FILE_BYTES = 5 * 1024 * 1024;            // 첨부 1개 최대 5MB
+  const MAX_ATTACH_TOTAL_BYTES = 15 * 1024 * 1024;   // 메모 한 건 합계 15MB
+  const MAX_ATTACH_COUNT = 10;                       // 메모 한 건 최대 10개
+  const ATTACH_IMAGE_SIDE = 1400;                    // 첨부 이미지 긴 변
+  const ATTACH_IMAGE_BYTES = 300 * 1024;             // 첨부 이미지 압축 목표
+  const FILE_CHUNK_CHARS = 512 * 1024;               // Base64 512K자씩 나눠 쓰기
+  const IMAGE_COMPRESSIBLE = /^image\/(jpeg|pjpeg|png|webp|bmp|avif)$/i; // gif·svg·heic는 원본 유지
 
   const LS = {
     room: 'sharedOffice.roomKey.v1',
@@ -49,6 +58,8 @@
     drafts: { memo: '', survey: {}, blog: {} },
     openReplies: new Set(),
     replyDrafts: {},
+    pendingFiles: [],          // 등록 전에 고른 첨부 파일
+    attachPreviews: {},        // fileId → dataUrl (카드 썸네일 캐시)
     showRoomKey: false,
     listeners: []
   };
@@ -148,6 +159,47 @@
       .trim()
       .slice(0, 40);
     return cleaned || fallback;
+  }
+
+  function dataUrlToBlob(dataUrl) {
+    const match = /^data:([^;,]*)?(;base64)?,/i.exec(String(dataUrl || ''));
+    if (!match) throw new Error('파일 형식이 올바르지 않습니다.');
+    const body = String(dataUrl).slice(match[0].length);
+    const type = match[1] || 'application/octet-stream';
+    if (!match[2]) return new Blob([decodeURIComponent(body)], { type });
+    const binary = window.atob(body);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return new Blob([bytes], { type });
+  }
+
+  function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(new Error('파일을 읽지 못했습니다.'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function isImageType(type) {
+    return /^image\//i.test(String(type || ''));
+  }
+
+  function fileExt(name) {
+    const match = /\.([a-z0-9]{1,5})$/i.exec(String(name || ''));
+    return match ? match[1].toUpperCase() : 'FILE';
+  }
+
+  function replaceExt(name, ext) {
+    const base = String(name || 'file').replace(/\.[a-z0-9]{1,6}$/i, '').trim();
+    return `${base || 'file'}.${ext}`;
+  }
+
+  function downloadFileName(name, type) {
+    const base = String(name || 'file').replace(/[\\/:*?"<>|\n\r\t]+/g, ' ').trim().slice(0, 120) || 'file';
+    if (String(type).toLowerCase() === 'image/jpeg' && !/\.jpe?g$/i.test(base)) return replaceExt(base, 'jpg');
+    return base;
   }
 
   let toastTimer = 0;
@@ -260,6 +312,10 @@
     dom.memoList = $('#memo-list');
     dom.memoEmpty = $('#memo-empty');
     dom.memoBadge = $('#memo-badge');
+    dom.memoAttachButton = $('#memo-attach-button');
+    dom.memoFiles = $('#memo-files');
+    dom.memoFileList = $('#memo-file-list');
+    dom.memoFileNote = $('#memo-file-note');
 
     dom.imageForm = $('#image-form');
     dom.imageDrop = $('#image-drop');
@@ -325,6 +381,25 @@
         dom.memoForm.requestSubmit();
       }
     });
+
+    // --- 첨부 파일 ---
+    if (dom.memoAttachButton && dom.memoFiles) {
+      dom.memoAttachButton.addEventListener('click', () => dom.memoFiles.click());
+      dom.memoFiles.addEventListener('change', () => {
+        addPendingFiles(dom.memoFiles.files);
+        dom.memoFiles.value = '';
+      });
+    }
+    if (dom.memoFileList) {
+      dom.memoFileList.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-remove-file]');
+        if (!button) return;
+        removePendingFile(Number(button.getAttribute('data-remove-file')));
+      });
+    }
+    if (dom.memoText) dom.memoText.addEventListener('paste', onMemoPaste);
+    bindMemoDrop();
+
     dom.memoList.addEventListener('click', onMemoClick);
     dom.memoList.addEventListener('change', onMemoChange);
     dom.memoList.addEventListener('submit', onMemoReplySubmit);
@@ -377,6 +452,12 @@
     dom.modal.addEventListener('close', () => {
       dom.modalImage.removeAttribute('src');
       dom.modalImage.alt = '';
+      const blobUrl = dom.modalDownload.dataset.blobUrl;
+      if (blobUrl) {
+        URL.revokeObjectURL(blobUrl);
+        delete dom.modalDownload.dataset.blobUrl;
+        dom.modalDownload.removeAttribute('href');
+      }
     });
   }
 
@@ -482,6 +563,8 @@
     state.drafts = { memo: '', survey: {}, blog: {} };
     state.openReplies.clear();
     state.replyDrafts = {};
+    state.attachPreviews = {};
+    clearPendingFiles();
     showLock();
     setLockError('');
     if (dom.password) dom.password.value = '';
@@ -655,23 +738,431 @@
     const author = dom.memoAuthor.value.trim() || '이름 없음';
     const tag = dom.memoTag.value;
     const text = dom.memoText.value.trim();
-    if (!text) {
+    const pending = state.pendingFiles.slice();
+
+    if (!text && !pending.length) {
       dom.memoText.focus();
-      toast('메모 내용을 입력해 주세요.');
+      toast('메모 내용을 입력하거나 파일을 첨부해 주세요.');
       return;
     }
-    dom.memoSubmit.disabled = true;
+    const problem = validatePendingFiles();
+    if (problem) {
+      setAttachNote(problem, true);
+      toast(problem);
+      return;
+    }
+
+    const memoRef = childRef('memos').push();
+    const memoId = memoRef.key;
+    const uploadedIds = [];
+    const attachments = [];
+
+    setMemoBusy(true, pending.length ? `올리는 중… 0/${pending.length}` : '등록 중…');
     try {
-      await childRef('memos').push({ author, tag, text, done: false, createdAt: Date.now() });
+      for (let index = 0; index < pending.length; index += 1) {
+        setMemoBusy(true, `올리는 중… ${index + 1}/${pending.length}`);
+        const saved = await saveAttachmentFile(pending[index].file, memoId);
+        uploadedIds.push(saved.summary.fileId);
+        attachments.push(saved.summary);
+      }
+
+      const memo = { author, tag, text, done: false, createdAt: Date.now() };
+      if (attachments.length) memo.attachments = attachments;
+      await memoRef.set(memo);
+
+      clearPendingFiles();
       dom.memoText.value = '';
+      setAttachNote('');
       localStorage.setItem(LS.author, author);
       hydrateAuthorFields();
-      toast('메모를 등록했습니다.');
+      toast(attachments.length ? `메모와 파일 ${attachments.length}개를 등록했습니다.` : '메모를 등록했습니다.');
     } catch (err) {
+      // 메모가 남지 않았으면 먼저 올린 파일도 함께 지운다.
+      if (uploadedIds.length) await removeMemoFiles(uploadedIds);
+      setAttachNote(`등록하지 못했습니다: ${err.message || err}`, true);
       toast(`등록하지 못했습니다: ${err.message || err}`);
     } finally {
-      dom.memoSubmit.disabled = false;
+      setMemoBusy(false);
     }
+  }
+
+  function setMemoBusy(busy, label) {
+    if (!dom.memoSubmit) return;
+    dom.memoSubmit.disabled = busy;
+    dom.memoSubmit.textContent = busy ? (label || '등록 중…') : '등록';
+  }
+
+  /* ---------- 첨부: 선택 전 미리보기 ---------- */
+
+  function addPendingFiles(fileList) {
+    const incoming = Array.from(fileList || []).filter((file) => file && typeof file === 'object');
+    if (!incoming.length) return;
+    let skippedCount = 0;
+
+    for (const file of incoming) {
+      if (state.pendingFiles.length >= MAX_ATTACH_COUNT) {
+        skippedCount += 1;
+        continue;
+      }
+      const previewable = isImageType(file.type) && !/^image\/svg/i.test(file.type || '');
+      state.pendingFiles.push({
+        file,
+        previewUrl: previewable ? URL.createObjectURL(file) : ''
+      });
+    }
+
+    renderPendingFiles();
+    if (skippedCount) toast(`한 번에 ${MAX_ATTACH_COUNT}개까지 첨부할 수 있습니다. ${skippedCount}개는 빠졌습니다.`);
+  }
+
+  function removePendingFile(index) {
+    const entry = state.pendingFiles[index];
+    if (!entry) return;
+    if (entry.previewUrl) URL.revokeObjectURL(entry.previewUrl);
+    state.pendingFiles.splice(index, 1);
+    renderPendingFiles();
+  }
+
+  function clearPendingFiles() {
+    state.pendingFiles.forEach((entry) => {
+      if (entry.previewUrl) URL.revokeObjectURL(entry.previewUrl);
+    });
+    state.pendingFiles = [];
+    renderPendingFiles();
+  }
+
+  function validatePendingFiles() {
+    if (!state.pendingFiles.length) return '';
+    if (state.pendingFiles.length > MAX_ATTACH_COUNT) {
+      return `파일은 한 메모에 ${MAX_ATTACH_COUNT}개까지 첨부할 수 있습니다.`;
+    }
+    const tooBig = state.pendingFiles.find((entry) => Number(entry.file.size) > MAX_FILE_BYTES);
+    if (tooBig) {
+      return `'${tooBig.file.name}'이(가) ${fmtBytes(tooBig.file.size)}입니다. 파일 한 개는 ${fmtBytes(MAX_FILE_BYTES)}까지 올릴 수 있어요.`;
+    }
+    const total = state.pendingFiles.reduce((sum, entry) => sum + (Number(entry.file.size) || 0), 0);
+    if (total > MAX_ATTACH_TOTAL_BYTES) {
+      return `첨부 합계가 ${fmtBytes(total)}입니다. 한 메모에는 ${fmtBytes(MAX_ATTACH_TOTAL_BYTES)}까지 올릴 수 있어요.`;
+    }
+    return '';
+  }
+
+  function setAttachNote(message, isError) {
+    if (!dom.memoFileNote) return;
+    dom.memoFileNote.textContent = message || '';
+    dom.memoFileNote.hidden = !message;
+    dom.memoFileNote.classList.toggle('is-ok', !!message && !isError);
+  }
+
+  function renderPendingFiles() {
+    if (!dom.memoFileList) return;
+    dom.memoFileList.textContent = '';
+    dom.memoFileList.hidden = state.pendingFiles.length === 0;
+
+    state.pendingFiles.forEach((entry, index) => {
+      const file = entry.file;
+      dom.memoFileList.append(h('li', { class: 'attach-item' },
+        h('span', { class: 'attach-thumb' },
+          entry.previewUrl
+            ? h('img', { src: entry.previewUrl, alt: '' })
+            : h('span', { class: 'attach-ext' }, fileExt(file.name))
+        ),
+        h('span', { class: 'attach-body' },
+          h('span', { class: 'attach-name', title: file.name }, file.name),
+          h('span', { class: 'attach-size' }, fmtBytes(file.size))
+        ),
+        h('button', {
+          type: 'button',
+          class: 'text-btn danger tiny',
+          'data-remove-file': String(index),
+          'aria-label': `${file.name} 첨부 빼기`
+        }, '빼기')
+      ));
+    });
+
+    const total = state.pendingFiles.reduce((sum, entry) => sum + (Number(entry.file.size) || 0), 0);
+    const problem = validatePendingFiles();
+    if (!state.pendingFiles.length) setAttachNote('');
+    else if (problem) setAttachNote(problem, true);
+    else setAttachNote(`${state.pendingFiles.length}개 · ${fmtBytes(total)} · 등록을 누르면 함께 올라갑니다.`, false);
+  }
+
+  function onMemoPaste(event) {
+    const clipboard = event.clipboardData;
+    if (!clipboard) return;
+    const files = [];
+    if (clipboard.files && clipboard.files.length) {
+      files.push(...Array.from(clipboard.files));
+    } else if (clipboard.items) {
+      Array.from(clipboard.items).forEach((item) => {
+        if (item.kind !== 'file') return;
+        const file = item.getAsFile();
+        if (file) files.push(file);
+      });
+    }
+    if (!files.length) return; // 글자 붙여넣기는 그대로 둔다.
+    event.preventDefault();
+    addPendingFiles(files);
+    toast(files.length === 1 ? '붙여넣은 파일을 첨부에 더했습니다.' : `붙여넣은 파일 ${files.length}개를 첨부에 더했습니다.`);
+  }
+
+  function bindMemoDrop() {
+    const form = dom.memoForm;
+    if (!form) return;
+    const hasFiles = (event) => Boolean(
+      event.dataTransfer && Array.from(event.dataTransfer.types || []).includes('Files')
+    );
+    ['dragenter', 'dragover'].forEach((type) => {
+      form.addEventListener(type, (event) => {
+        if (!hasFiles(event)) return;
+        event.preventDefault();
+        form.classList.add('is-dragover');
+      });
+    });
+    form.addEventListener('dragleave', (event) => {
+      if (event.relatedTarget && form.contains(event.relatedTarget)) return;
+      form.classList.remove('is-dragover');
+    });
+    form.addEventListener('drop', (event) => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      form.classList.remove('is-dragover');
+      addPendingFiles(event.dataTransfer.files);
+    });
+  }
+
+  /* ---------- 첨부: 저장 · 조회 ---------- */
+
+  async function saveAttachmentFile(file, memoId) {
+    const fileId = childRef('memoFiles').push().key;
+    let name = file.name || 'file';
+    let type = file.type || 'application/octet-stream';
+    let size = Number(file.size) || 0;
+    let dataUrl = '';
+
+    if (IMAGE_COMPRESSIBLE.test(type)) {
+      try {
+        const output = await compressImage(file, { maxSide: ATTACH_IMAGE_SIDE, maxBytes: ATTACH_IMAGE_BYTES });
+        dataUrl = output.dataUrl;
+        type = 'image/jpeg';
+        size = output.bytes;
+        name = replaceExt(name, 'jpg');
+      } catch (err) {
+        dataUrl = await readFileAsDataUrl(file); // 압축할 수 없는 형식은 원본 그대로
+      }
+    } else {
+      dataUrl = await readFileAsDataUrl(file);
+    }
+
+    if (!dataUrl) throw new Error(`${name} 내용을 읽지 못했습니다.`);
+
+    const meta = { fileId, memoId, name, type, size, createdAt: Date.now() };
+
+    try {
+      // 큰 파일은 한 번 쓰기 부담이 없도록 잘라서 저장한다.
+      if (dataUrl.length <= FILE_CHUNK_CHARS) {
+        await childRef(`memoFiles/${fileId}`).set(Object.assign({}, meta, { dataUrl }));
+      } else {
+        const chunkCount = Math.ceil(dataUrl.length / FILE_CHUNK_CHARS);
+        await childRef(`memoFiles/${fileId}`).update(Object.assign({}, meta, { chunkCount }));
+        for (let index = 0; index < chunkCount; index += 1) {
+          const piece = dataUrl.slice(index * FILE_CHUNK_CHARS, (index + 1) * FILE_CHUNK_CHARS);
+          await childRef(`memoFiles/${fileId}/chunks/${index}`).set(piece);
+        }
+      }
+    } catch (err) {
+      // 중간에 실패하면 조각까지 지우고 오류를 전달한다.
+      await childRef(`memoFiles/${fileId}`).remove().catch(() => {});
+      throw err;
+    }
+
+    return { summary: { fileId, name, type, size } };
+  }
+
+  async function removeMemoFiles(fileIds) {
+    await Promise.all((fileIds || []).map((fileId) =>
+      childRef(`memoFiles/${fileId}`).remove().catch(() => {})
+    ));
+  }
+
+  async function fetchAttachmentData(fileId) {
+    const snap = await childRef(`memoFiles/${fileId}`).once('value');
+    const meta = snap.val();
+    if (!meta || typeof meta !== 'object') {
+      throw new Error('파일을 찾을 수 없습니다. 이미 삭제되었을 수 있습니다.');
+    }
+    let dataUrl = typeof meta.dataUrl === 'string' ? meta.dataUrl : '';
+    if (!dataUrl && meta.chunks && typeof meta.chunks === 'object') {
+      dataUrl = Object.keys(meta.chunks)
+        .sort((a, b) => Number(a) - Number(b))
+        .map((key) => String(meta.chunks[key] || ''))
+        .join('');
+    }
+    if (!dataUrl) throw new Error('파일 내용이 비어 있습니다.');
+    return Object.assign({}, meta, { dataUrl });
+  }
+
+  function memoAttachments(memo) {
+    const raw = memo && memo.attachments;
+    if (!raw || typeof raw !== 'object') return [];
+    const list = Array.isArray(raw) ? raw : Object.values(raw);
+    return list.filter((item) => item && typeof item === 'object' && item.fileId);
+  }
+
+  function findAttachment(fileId) {
+    const memos = state.memos || {};
+    for (const memo of Object.values(memos)) {
+      const hit = memoAttachments(memo).find((file) => file.fileId === fileId);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  function attachmentBlock(memo) {
+    const files = memoAttachments(memo);
+    if (!files.length) return null;
+
+    const images = files.filter((file) => isImageType(file.type));
+    const others = files.filter((file) => !isImageType(file.type));
+    const box = h('div', { class: 'memo-files' });
+
+    if (images.length) {
+      const grid = h('div', { class: 'memo-file-grid' });
+      images.forEach((file) => {
+        const cached = state.attachPreviews[file.fileId];
+        const ready = typeof cached === 'string' && /^data:image\//i.test(cached);
+        const failed = cached === 'error';
+        grid.append(h('button', {
+          type: 'button',
+          class: 'memo-file-thumb',
+          'data-action': 'preview-file',
+          'data-file-id': file.fileId,
+          'aria-label': `${file.name} 크게 보기`
+        }, ready
+          ? h('img', { src: cached, alt: file.name })
+          : h('span', { class: 'thumb-loading' }, failed ? '미리보기 없음' : (cached === 'loading' ? '불러오는 중…' : '미리보기'))));
+        if (!ready && !failed) loadAttachmentPreview(file.fileId);
+      });
+      box.append(grid);
+    }
+
+    others.forEach((file) => {
+      box.append(h('div', { class: 'memo-file-row' },
+        h('span', { class: 'file-badge' }, fileExt(file.name)),
+        h('span', { class: 'memo-file-body' },
+          h('span', { class: 'memo-file-name', title: file.name }, file.name),
+          h('span', { class: 'memo-file-size' }, fmtBytes(file.size))
+        ),
+        h('button', {
+          type: 'button',
+          class: 'btn ghost small',
+          'data-action': 'download-file',
+          'data-file-id': file.fileId
+        }, '다운로드')
+      ));
+    });
+
+    return box;
+  }
+
+  async function loadAttachmentPreview(fileId) {
+    if (state.attachPreviews[fileId]) return;
+    state.attachPreviews[fileId] = 'loading';
+    try {
+      const data = await fetchAttachmentData(fileId);
+      const src = safeImageSrc(data.dataUrl);
+      if (!src) throw new Error('이미지 미리보기를 지원하지 않는 형식입니다.');
+      state.attachPreviews[fileId] = src;
+      updateAttachmentThumb(fileId, h('img', { src, alt: data.name || '첨부 이미지' }));
+    } catch (err) {
+      state.attachPreviews[fileId] = 'error';
+      updateAttachmentThumb(fileId, h('span', { class: 'thumb-loading' }, '미리보기 없음'));
+    }
+  }
+
+  function updateAttachmentThumb(fileId, content) {
+    if (!dom.memoList) return;
+    $$(`[data-file-id="${fileId}"]`, dom.memoList).forEach((node) => {
+      if (!node.classList.contains('memo-file-thumb')) return;
+      node.textContent = '';
+      node.append(content.cloneNode(true));
+    });
+  }
+
+  async function downloadMemoFile(fileId, button) {
+    const info = findAttachment(fileId) || {};
+    const label = button ? button.textContent : '';
+    if (button) {
+      button.disabled = true;
+      button.textContent = '불러오는 중…';
+    }
+    try {
+      const data = await fetchAttachmentData(fileId);
+      const blob = dataUrlToBlob(data.dataUrl);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = downloadFileName(data.name || info.name, data.type || info.type);
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (err) {
+      toast(`내려받지 못했습니다: ${err.message || err}`);
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = label;
+      }
+    }
+  }
+
+  async function openMemoFilePreview(fileId) {
+    const info = findAttachment(fileId) || {};
+    let src = safeImageSrc(state.attachPreviews[fileId] || '');
+    let name = info.name || '이미지';
+    let type = info.type || '';
+    let size = info.size;
+    try {
+      if (!src) {
+        const data = await fetchAttachmentData(fileId);
+        src = safeImageSrc(data.dataUrl);
+        name = data.name || name;
+        type = data.type || type;
+        size = data.size || size;
+        if (src) state.attachPreviews[fileId] = src;
+      }
+      if (!src) throw new Error('미리보기를 지원하지 않는 형식입니다.');
+      dom.modalTitle.textContent = name;
+      dom.modalImage.src = src;
+      dom.modalImage.alt = name;
+      dom.modalMeta.textContent = [name, fmtBytes(size)].filter(Boolean).join(' · ');
+      setModalDownload(src, downloadFileName(name, type), true);
+      if (typeof dom.modal.showModal === 'function') dom.modal.showModal();
+      else dom.modal.setAttribute('open', '');
+    } catch (err) {
+      toast(`열지 못했습니다: ${err.message || err}`);
+    }
+  }
+
+  function setModalDownload(src, downloadName, asBlob) {
+    const previous = dom.modalDownload.dataset.blobUrl;
+    if (previous) {
+      URL.revokeObjectURL(previous);
+      delete dom.modalDownload.dataset.blobUrl;
+    }
+    if (asBlob) {
+      try {
+        const url = URL.createObjectURL(dataUrlToBlob(src));
+        dom.modalDownload.dataset.blobUrl = url;
+        dom.modalDownload.href = url;
+      } catch (err) {
+        dom.modalDownload.href = src;
+      }
+    } else {
+      dom.modalDownload.href = src;
+    }
+    dom.modalDownload.download = downloadName;
   }
 
   function renderMemoFilters() {
@@ -752,7 +1243,8 @@
               h('button', { type: 'button', class: 'btn primary small', 'data-action': 'save-edit', 'data-id': memo.id }, '저장')
             )
           )
-        : h('p', { class: 'memo-text' }, memo.text || ''),
+        : (memo.text ? h('p', { class: 'memo-text' }, memo.text) : null),
+      attachmentBlock(memo),
       h('div', { class: 'memo-actions' },
         h('button', { type: 'button', class: 'text-btn', 'data-action': 'edit', 'data-id': memo.id }, '수정'),
         h('button', { type: 'button', class: 'text-btn', 'data-action': 'toggle-replies', 'data-id': memo.id }, replies.length ? `답글 ${replies.length}` : '답글'),
@@ -813,6 +1305,8 @@
     else if (action === 'toggle-replies') toggleReplies(id);
     else if (action === 'delete') deleteMemo(id);
     else if (action === 'delete-reply') deleteReply(id, button.dataset.reply);
+    else if (action === 'download-file') downloadMemoFile(button.dataset.fileId, button);
+    else if (action === 'preview-file') openMemoFilePreview(button.dataset.fileId);
   }
 
   function onMemoChange(event) {
@@ -914,9 +1408,17 @@
   }
 
   async function deleteMemo(id) {
-    if (!window.confirm('이 메모와 답글을 삭제할까요? 되돌릴 수 없습니다.')) return;
+    const files = memoAttachments(state.memos[id]);
+    const message = files.length
+      ? `이 메모와 답글, 첨부 파일 ${files.length}개를 삭제할까요? 되돌릴 수 없습니다.`
+      : '이 메모와 답글을 삭제할까요? 되돌릴 수 없습니다.';
+    if (!window.confirm(message)) return;
     try {
       await childRef(`memos/${id}`).remove();
+      if (files.length) {
+        await removeMemoFiles(files.map((file) => file.fileId));
+        files.forEach((file) => { delete state.attachPreviews[file.fileId]; });
+      }
       toast('메모를 삭제했습니다.');
     } catch (err) {
       toast(`삭제하지 못했습니다: ${err.message || err}`);
@@ -1044,15 +1546,18 @@
     });
   }
 
-  async function compressImage(file) {
+  async function compressImage(file, options) {
+    const opts = options || {};
+    const maxSide = Number(opts.maxSide) || MAX_IMAGE_SIDE;
+    const maxBytes = Number(opts.maxBytes) || MAX_WRITE_BYTES;
     if (!file.type || !file.type.startsWith('image/')) {
       throw new Error('이미지 파일이 아닙니다.');
     }
     const image = await loadImage(file);
 
-    const ratio = Math.min(1, MAX_IMAGE_SIDE / Math.max(image.width || 1, image.height || 1));
-    let width = Math.max(1, Math.round((image.width || MAX_IMAGE_SIDE) * ratio));
-    let height = Math.max(1, Math.round((image.height || MAX_IMAGE_SIDE) * ratio));
+    const ratio = Math.min(1, maxSide / Math.max(image.width || 1, image.height || 1));
+    let width = Math.max(1, Math.round((image.width || maxSide) * ratio));
+    let height = Math.max(1, Math.round((image.height || maxSide) * ratio));
 
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d');
@@ -1072,11 +1577,11 @@
       context.fillRect(0, 0, width, height);
       context.drawImage(image, 0, 0, width, height);
       dataUrl = canvas.toDataURL('image/jpeg', quality);
-      if (dataUrlBytes(dataUrl) <= MAX_WRITE_BYTES) break;
+      if (dataUrlBytes(dataUrl) <= maxBytes) break;
       quality = Math.max(0.45, quality - 0.1);
     }
 
-    if (dataUrlBytes(dataUrl) > MAX_WRITE_BYTES) {
+    if (dataUrlBytes(dataUrl) > maxBytes) {
       throw new Error('용량을 줄이지 못했습니다. 더 작은 이미지를 써 주세요.');
     }
 
@@ -1644,6 +2149,27 @@
         `curl -X PATCH -H "Content-Type: application/json" \\`,
         `  -d '{"status":"완료","updatedAt":1795768800000}' \\`,
         `  "${base}/surveys/{설문ID}.json"`
+      ].join('\n')
+    ));
+
+    root.append(codeCard(
+      '메모 첨부 파일 (memoFiles)',
+      '첨부 파일 본문은 메모와 분리해 memoFiles에 둡니다. 메모에는 이름·형식·용량만 남아 목록과 정기 확인이 가볍습니다. 5MB를 넘는 파일은 512K자씩 chunks로 나뉘어 저장됩니다.',
+      [
+        `# 메모에는 첨부 메타데이터만 들어갑니다`,
+        `curl "${base}/memos.json"`,
+        `# → { "text": "...", "attachments": [{ "fileId": "-N...", "name": "보고서.hwp", "type": "application/x-hwp", "size": 234567 }] }`,
+        ``,
+        `# 첨부 파일 본문 조회 (dataUrl 또는 chunks)`,
+        `curl "${base}/memoFiles/{fileId}.json"`,
+        ``,
+        `# 파일 하나 올리기 (Base64 data URL 문자열)`,
+        `curl -X PUT -H "Content-Type: application/json" \\`,
+        `  -d '{"name":"메모.txt","type":"text/plain","size":12,"dataUrl":"data:text/plain;base64,...","createdAt":1795768800000}' \\`,
+        `  "${base}/memoFiles/{fileId}.json"`,
+        ``,
+        `# 메모 삭제 시 첨부도 함께 정리`,
+        `curl -X DELETE "${base}/memoFiles/{fileId}.json"`
       ].join('\n')
     ));
 

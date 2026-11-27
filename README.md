@@ -123,7 +123,7 @@ Realtime Database → **규칙** 탭에서 아래 내용을 붙여넣고 **게�
 
 | 탭 | 하는 일 |
 |---|---|
-| **공유 메모** | 작성자·태그(지시/요청/보고/메모)를 골라 등록. 카드에서 바로 **수정**(인라인), **완료** 체크, **답글**, **삭제**. 필터: 전체/미완료/태그별 |
+| **공유 메모** | 작성자·태그(지시/요청/보고/메모)를 골라 등록. **이미지·문서(HWP·PDF·XLSX·PPTX·DOCX)·압축 파일**을 첨부할 수 있고(끌어다 놓기·Ctrl+V 붙여넣기), 카드에서 썸네일로 보거나 다운로드합니다. 카드에서 바로 **수정**(인라인), **완료** 체크, **답글**, **삭제**. 필터: 전체/미완료/태그별 |
 | **이미지** | 여러 장을 한 번에 끌어다 놓거나 선택. 긴 변 1280px·JPEG로 자동 경량화해 저장. 클릭하면 크게 보기 + 다운로드 |
 | **보드** | **설문 현황**(진행전/진행중/완료)과 **블로그 보드**(기획/작성중/발행완료)를 전환하며, 상태별 필터·추가·수정·삭제. 마감일은 D-day로 표시 |
 | **AI 연동** | 지금 연결된 `databaseURL`과 `ROOM_KEY` 기준 **REST API 예시**가 자동으로 표시됩니다. 복사 버튼으로 바로 사용 |
@@ -153,16 +153,28 @@ curl -X PATCH -H "Content-Type: application/json" \
 curl -X POST -H "Content-Type: application/json" \
   -d '{"author":"AI비서","text":"답글","createdAt":1795768800000}' \
   "$BASE/memos/{메모ID}/replies.json"
+
+# 첨부 파일 본문 조회 (dataUrl 또는 chunks)
+curl "$BASE/memoFiles/{파일ID}.json"
 ```
 
 데이터 구조 (`/office/{ROOM_KEY}/`):
 
 ```
-memos/{id}                 { author, tag, text, done, createdAt, replies/{replyId} }
+memos/{id}                 { author, tag, text, done, createdAt,
+                             attachments: [{ fileId, name, type, size }],
+                             replies/{replyId} }
+memoFiles/{id}             { name, type, size, memoId, createdAt,
+                             dataUrl }                       // 작은 파일
+memoFiles/{id}             { name, type, size, memoId, createdAt,
+                             chunkCount, chunks/{0..n} }     // 512K자 넘는 파일
 images/{id}                { author, title, dataUrl, width, height, bytes, createdAt }
 surveys/{id}               { title, deadline, status, assignee, note, updatedAt }
 blogs/{id}                 { title, platform, status, author, note, updatedAt }
 ```
+
+메모에는 첨부 파일의 **이름·형식·용량만** 들어가고 본문(Base64)은 `memoFiles`에 따로 둡니다.
+그래서 `memos.json`이 가벼워 목록 로딩과 정기 확인(`check.sh`)이 느려지지 않습니다.
 
 정기 확인용 `check.sh` 예시 (완료되지 않은 메모가 있을 때만 AI를 깨움):
 
@@ -176,7 +188,9 @@ exit 1
 
 ## 9. 알아 둘 제한과 주의
 
-- **이미지 용량**: Realtime Database는 한 번의 쓰기 요청이 **256KB**를 넘으면 거부합니다. 그래서 업로드할 때 긴 변 1280px·JPEG 0.85로 줄이고, 그래도 200KB를 넘으면 품질과 크기를 자동으로 더 줄입니다. 아주 복잡한 사진은 업로드가 실패할 수 있습니다. 저장본은 원본이 아니라 이렇게 줄인 이미지이고, 페이지를 열 때 이미지 전체를 내려받으므로 많이 쌓이면 첫 로딩이 느려질 수 있습니다.
+- **첨부 파일**: 한 메모에 10개까지, 파일 하나 5MB, 합계 15MB까지 올릴 수 있습니다. 이미지는 긴 변 1400px·JPEG로 자동 경량화되고, GIF·SVG·HEIC처럼 다시 그릴 수 없는 형식은 원본 그대로 저장됩니다. 문서 파일은 원본 바이트가 그대로 보관되어 다운로드하면 같은 파일이 됩니다.
+- **큰 파일 저장 방식**: Base64 512K자가 넘는 파일은 `memoFiles/{id}/chunks/{0..n}`으로 나눠 씁니다(한 번에 큰 쓰기를 피해 실패 확률을 줄입니다). 조회할 때는 `memoFiles/{id}.json` 한 번이면 조각이 합쳐진 형태로 옵니다.
+- **이미지 용량**: Realtime Database 값 하나는 10MB를 넘을 수 없습니다. 그래서 업로드할 때 큰 이미지는 줄이고, 첨부 파일은 위처럼 나눠 씁니다. 저장본은 원본이 아니라 줄인 이미지이고, 페이지를 열 때 첨부 이미지 썸네일을 그때그때 읽으므로 많이 쌓이면 첫 로딩이 느려질 수 있습니다.
 - **무료 요금제(Spark)**: 저장 1GB, 월 다운로드 10GB까지 무료입니다. 이미지 200KB 기준 약 5,000장 수준입니다.
 - **공개 저장소**: 페이지 주소는 공개입니다. 주소를 아는 사람도 비밀번호(ROOM_KEY)가 없으면 데이터를 볼 수 없지만, **이름·전화번호·주소·계정 비밀번호 같은 개인정보는 올리지 마세요.** 화면에도 같은 안내가 표시됩니다.
 - **비밀번호 분실**: 데이터는 `/office/{기존_ROOM_KEY}`에 그대로 남아 있습니다. 4단계로 새 ROOM_KEY를 만들고 5단계 규칙을 새 값으로 바꾸면 새 방이 열리지만, 기존 데이터는 보이지 않습니다. 꼭 필요하면 Firebase 콘솔에서 기존 노드를 새 노드로 복사하세요.
@@ -190,6 +204,7 @@ exit 1
 | "설정이 아직 필요합니다" | `firebase-config.js`가 아직 플레이스홀더입니다. 3단계를 마치세요. |
 | 페이지가 하얗고 아무것도 안 보임 | `app.js`·`style.css` 경로가 저장소 최상위와 같은지 확인하세요. |
 | 이미지 업로드가 실패함 | 사진 용량이 너무 큽니다. 더 작은 이미지로 시도하거나 캡처 후 올려 주세요. |
+| 첨부 파일이 너무 크다고 나옴 | 파일 하나 5MB, 메모당 합계 15MB까지입니다. ZIP으로 묶거나 나눠서 올려 주세요. |
 | 실시간 반영이 안 됨 | 상단 연결 점을 확인하세요. 오프라인이면 연결이 돌아올 때 자동으로 다시 붙습니다. |
 | Firebase 요금이 걱정됨 | Spark 무료 한도 내에서만 동작하며, 한도를 넘으면 해당 월말까지 쓰기가 제한될 뿐 과금되지 않습니다. |
 
