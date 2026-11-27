@@ -449,6 +449,11 @@
     updateEditorEmpty(el);
   }
 
+  /* 다시 그린 뒤 빈 편집기의 안내문(placeholder) 상태를 맞춘다 */
+  function refreshEditors(root) {
+    $$('[data-editor]', root || document).forEach((el) => updateEditorEmpty(el));
+  }
+
   function caretOffset(el) {
     const sel = window.getSelection();
     if (!sel || !sel.rangeCount) return null;
@@ -555,9 +560,11 @@
 
   function clearEditorFormat(range) {
     const fragment = range.extractContents();
+    window.__fmtDbg = Object.assign(window.__fmtDbg || {}, { fragKids: fragment.childNodes.length, afterExtract: document.querySelector('[data-editor]:focus') ? document.querySelector('[data-editor]:focus').innerHTML : null });
     const holder = document.createElement('div');
     holder.appendChild(fragment);
     const parts = richTextToPlain(holder.innerHTML).split('\n');
+    window.__fmtDbg.holder = holder.innerHTML;
     const next = document.createDocumentFragment();
     const nodes = [];
     parts.forEach((line, index) => {
@@ -572,6 +579,7 @@
         nodes.push(textNode);
       }
     });
+    window.__fmtDbg.nodes = nodes.length;
     if (!nodes.length) return;
     const first = nodes[0];
     const last = nodes[nodes.length - 1];
@@ -597,8 +605,10 @@
       return;
     }
     if (fmt === 'clear') {
+      window.__fmtDbg = { fmt, collapsed: range.collapsed, common: range.commonAncestorContainer.nodeName, inEditor: editor.contains(range.commonAncestorContainer), html: editor.innerHTML };
       if (range.collapsed) { toast('서식을 지울 글자를 먼저 선택해 주세요.'); return; }
       clearEditorFormat(range);
+      window.__fmtDbg.after = editor.innerHTML;
     } else if (fmt === 'bold') toggleTag(editor, range, 'b');
     else if (fmt === 'italic') toggleTag(editor, range, 'i');
     else if (fmt === 'underline') toggleTag(editor, range, 'u');
@@ -1916,6 +1926,7 @@
       ? '이 필터에 해당하는 글이 없습니다.'
       : '아직 공유된 업무가 없습니다. 위에서 첫 글을 남겨 보세요.';
     visible.forEach((memo) => dom.memoList.append(memoCard(memo)));
+    refreshEditors(dom.memoList);
     restoreFocus(dom.memoList, savedFocus);
 
     const openCount = all.filter((memo) => !memo.done).length;
@@ -2826,6 +2837,7 @@
     dom.noticeEmpty.hidden = all.length > 0;
     dom.noticeEmpty.textContent = '아직 등록된 공지가 없습니다. 위에서 첫 공지를 남겨 보세요.';
     all.forEach((item) => dom.noticeList.append(noticeItem(item)));
+    refreshEditors(dom.noticeList);
     restoreFocus(dom.noticeList, savedFocus);
   }
 
