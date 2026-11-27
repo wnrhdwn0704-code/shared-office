@@ -123,12 +123,14 @@ Realtime Database → **규칙** 탭에서 아래 내용을 붙여넣고 **게�
 
 | 탭 | 하는 일 |
 |---|---|
-| **업무 공유** | 작성자·태그(지시/요청/보고/메모)를 골라 등록. **이미지·문서(HWP·PDF·XLSX·PPTX·DOCX)·압축 파일**을 첨부할 수 있고(끌어다 놓기·Ctrl+V 붙여넣기), 카드에서 썸네일로 보거나 다운로드합니다. 카드에서 바로 **수정**(인라인), **완료** 체크, **답글**, **삭제**. 답글에도 **📎 파일 첨부**와 **수정**이 가능합니다. 필터: 전체/미완료/태그별 |
+| **업무 공유** | 작성자·태그(지시/요청/보고/메모)를 골라 등록. 본문은 **굵게(B)·기울임(I)·밑줄(U)·글자색(빨강/파랑/초록/주황)·형광펜·서식 지우기** 툴바로 꾸밀 수 있습니다. **이미지·문서(HWP·PDF·XLSX·PPTX·DOCX)·압축 파일**을 첨부할 수 있고(끌어다 놓기·Ctrl+V 붙여넣기), 카드에서 썸네일로 보거나 다운로드합니다. 카드에서 바로 **수정**(인라인, 서식 유지), **완료** 체크, **답글**, **삭제**, 카드·답글마다 **이모지 반응**(✅ 👍 ❤️ 👏 👀). 필터: 전체/미완료/태그별 |
 | **이미지** | 여러 장을 한 번에 끌어다 놓거나 선택. 긴 변 1280px·JPEG로 자동 경량화해 저장. 클릭하면 크게 보기 + 다운로드 |
-| **공지** | 제목·작성자·내용을 적고 **중요 공지**·**상단 고정**을 체크해 등록. 목록은 **상단 고정 공지가 먼저, 나머지는 최신순**이며 중요 배지가 표시됩니다. 카드에서 **수정**(인라인), **상단 고정 토글**, **답글**(작성·수정·삭제), **삭제** |
+| **공지** | 제목·작성자·내용(서식 툴바 지원)을 적고 **중요 공지**·**상단 고정**을 체크해 등록. 목록은 **상단 고정 공지가 먼저, 나머지는 최신순**이며 중요 배지가 표시됩니다. 카드에서 **수정**(인라인), **상단 고정 토글**, **답글**(작성·수정·삭제), **이모지 반응**, **삭제** |
 | **AI 연동** | 지금 연결된 `databaseURL`과 `ROOM_KEY` 기준 **REST API 예시**가 자동으로 표시됩니다. 복사 버튼으로 바로 사용 |
 
 모든 변경은 Firebase 실시간 연결로 다른 기기·다른 사람 화면에 바로 반영됩니다. 상단의 점이 초록이면 연결됨, 주황이면 연결 중입니다.
+
+상단의 **🔔 알림** 버튼을 켜면 브라우저 알림 권한을 요청하고, 그 뒤로 **새 `보고` 글**이나 **완료로 바뀐 업무**가 생길 때 화면 위 알림 배너와 브라우저 알림으로 알려 줍니다(내가 방금 올린 글과 처음 불러온 글은 제외). 설정은 이 브라우저에만 저장됩니다.
 
 ## 8. 다른 AI·스크립트에서 쓰기 (REST API)
 
@@ -178,6 +180,20 @@ curl -X PATCH -H "Content-Type: application/json" \
   -d '{"text":"고친 답글","updatedAt":1795768800000}' \
   "$BASE/notices/{공지ID}/replies/{답글ID}.json"
 
+# 서식 있는 업무 공유 등록 (html은 선택 — 화면에서 한 번 더 정리해 그림)
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"author":"AI비서","tag":"보고","text":"중요 보고입니다.","html":"<b>중요</b> 보고입니다.","done":false,"createdAt":1795768800000}' \
+  "$BASE/memos.json"
+
+# 이모지 반응 남기기 / 취소 (PUT·DELETE — 이름의 공백은 URL 인코딩)
+curl -X PUT -H "Content-Type: application/json" -d 'true' \
+  "$BASE/memos/{글ID}/reactions/%E2%9C%85/%EB%B3%84%20%EA%B3%BC%EC%9E%A5.json"
+curl -X DELETE "$BASE/memos/{글ID}/reactions/%E2%9C%85/%EB%B3%84%20%EA%B3%BC%EC%9E%A5.json"
+curl "$BASE/memos/{글ID}/reactions.json"
+
+# 답글 반응: replies/{답글ID}/reactions/{이모지}/{이름}, 공지 반응: notices/{공지ID}/reactions/...
+# 이모지 키: ✅ 👍 ❤️ 👏 👀
+
 # 첨부 파일 본문 조회 (dataUrl 또는 chunks)
 curl "$BASE/memoFiles/{파일ID}.json"
 ```
@@ -185,24 +201,31 @@ curl "$BASE/memoFiles/{파일ID}.json"
 데이터 구조 (`/office/{ROOM_KEY}/`):
 
 ```
-memos/{id}                 { author, tag, text, done, createdAt,
+memos/{id}                 { author, tag, text, html?, done, createdAt,
                              attachments: [{ fileId, name, type, size }],
+                             reactions/{이모지}/{이름}: true,
                              replies/{replyId} }
 replies/{replyId}          { author, text, createdAt, updatedAt,
-                             attachments: [{ fileId, name, type, size }] }
+                             attachments: [{ fileId, name, type, size }],
+                             reactions/{이모지}/{이름}: true }
 memoFiles/{id}             { name, type, size, memoId, createdAt,
                              dataUrl }                       // 작은 파일
 memoFiles/{id}             { name, type, size, memoId, createdAt,
                              chunkCount, chunks/{0..n} }     // 512K자 넘는 파일
 images/{id}                { author, title, dataUrl, width, height, bytes, createdAt }
-notices/{id}               { title, author, content, important, pinned,
+notices/{id}               { title, author, content, html?, important, pinned,
                              createdAt, updatedAt,
-                             replies/{replyId} }   // { author, text, createdAt, updatedAt }
+                             reactions/{이모지}/{이름}: true,
+                             replies/{replyId} }   // { author, text, createdAt, updatedAt, reactions }
 ```
 
 업무 공유 글과 답글에는 첨부 파일의 **이름·형식·용량만** 들어가고 본문(Base64)은 `memoFiles`에 따로 둡니다.
 그래서 `memos.json`이 가벼워 목록 로딩과 정기 확인(`check.sh`)이 느려지지 않습니다.
 공지 목록은 `pinned`가 참인 항목을 먼저, 나머지는 `createdAt` 최신순으로 정렬해 보여 줍니다.
+
+**서식(`html`)**: 서식을 쓴 글만 `html`이 함께 저장되고, 같은 내용이 평문 `text`(공지는 `content`)에도 들어갑니다. `html`은 `<b> <strong> <i> <em> <u> <span style="color·background-color"> <br> <p> <div>`만 허용하는 화이트리스트로 정리되며, `<script>`·이벤트 핸들러·`javascript:` 주소 등은 저장·표시할 때 모두 제거됩니다. 색은 `var(--rt-red)` 같은 테마 변수로 저장되어 라이트/다크 화면에서 각각 읽기 좋게 보입니다. AI 판독과 `check.sh`는 `text`만 읽으면 됩니다.
+
+**이모지 반응(`reactions`)**: 글·답글·공지마다 `reactions/{이모지}/{누른 사람 이름} = true`로 쌓입니다. 이름은 Firebase 키로 쓸 수 없는 문자(`. $ # [ ] /`)를 `_`로 바꿔 저장합니다. 앱에서 같은 이모지를 다시 누르면 내 반응이 취소되고, 마우스를 올리거나 초점을 주면 누가 눌렀는지 이름이 보입니다.
 
 정기 확인용 `check.sh` 예시 (완료되지 않은 업무 공유 글이 있을 때만 AI를 깨움):
 
@@ -223,6 +246,8 @@ exit 1
 - **공개 저장소**: 페이지 주소는 공개입니다. 주소를 아는 사람도 비밀번호(ROOM_KEY)가 없으면 데이터를 볼 수 없지만, **이름·전화번호·주소·계정 비밀번호 같은 개인정보는 올리지 마세요.** 화면에도 같은 안내가 표시됩니다.
 - **비밀번호 분실**: 데이터는 `/office/{기존_ROOM_KEY}`에 그대로 남아 있습니다. 4단계로 새 ROOM_KEY를 만들고 5단계 규칙을 새 값으로 바꾸면 새 방이 열리지만, 기존 데이터는 보이지 않습니다. 꼭 필요하면 Firebase 콘솔에서 기존 노드를 새 노드로 복사하세요.
 - **비밀번호를 바꾸면** 방도 새로 생깁니다. 같은 비밀번호를 계속 쓰는 편이 관리하기 쉽습니다.
+- **브라우저 알림**: 상단 `🔔 알림`으로 켜고 끕니다. 알림은 이 브라우저에만 적용되고, 기기·브라우저마다 따로 켜야 합니다. 권한을 거부하면 화면 안 배너만 보입니다. 안드로이드 크롬처럼 `new Notification()`을 막는 브라우저에서는 화면 안 배너로만 알립니다. 반응 알림은 보내지 않고 **새 `보고` 글과 완료된 업무**만 알립니다.
+- **서식**: 본문은 화이트리스트 HTML만 저장·표시합니다. 다른 곳에서 복사한 글은 서식 없이 글자만 붙고, 지원하지 않는 색·태그는 자동으로 빠집니다.
 
 ## 10. 문제 해결
 

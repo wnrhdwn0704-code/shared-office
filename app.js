@@ -16,6 +16,15 @@
   const TAGS = ['지시', '요청', '보고', '메모'];
   const TAG_CLASS = { 지시: 'tag-order', 요청: 'tag-request', 보고: 'tag-report', 메모: 'tag-memo' };
 
+  /* 이모지 반응 — Firebase 경로: {memos|notices}/{id}[/replies/{replyId}]/reactions/{이모지}/{이름} = true */
+  const REACTIONS = [
+    { emoji: '✅', label: '확인' },
+    { emoji: '👍', label: '좋아요' },
+    { emoji: '❤️', label: '최고' },
+    { emoji: '👏', label: '박수' },
+    { emoji: '👀', label: '읽음' }
+  ];
+
   const MAX_IMAGE_SIDE = 1280;          // 긴 변 기준 리사이즈
   const JPEG_QUALITY = 0.85;            // 기본 압축 품질
   const MAX_WRITE_BYTES = 200 * 1024;   // 이미지 한 장이 가볍게 유지되도록
@@ -32,7 +41,8 @@
   const LS = {
     room: 'sharedOffice.roomKey.v1',
     project: 'sharedOffice.projectId.v1',
-    author: 'sharedOffice.author.v1'
+    author: 'sharedOffice.author.v1',
+    notify: 'sharedOffice.notify.v1'
   };
 
   const state = {
@@ -55,7 +65,10 @@
     pendingFiles: [],          // 등록 전에 고른 첨부 파일
     attachPreviews: {},        // fileId → dataUrl (카드 썸네일 캐시)
     showRoomKey: false,
-    listeners: []
+    listeners: [],
+    notifyEnabled: false,      // 브라우저 알림 켜짐 여부
+    memosLoaded: false,        // 첫 로딩이 끝났는지 (초기 데이터는 알리지 않는다)
+    ownMemoIds: new Set()      // 이 화면에서 직접 올린 글 (알림 제외)
   };
 
   const dom = {};
@@ -72,6 +85,7 @@
         if (value === null || value === undefined || value === false) continue;
         if (key === 'class') node.className = value;
         else if (key === 'text') node.textContent = value;
+        else if (key === 'html') node.innerHTML = value;
         else if (key === 'dataset') Object.assign(node.dataset, value);
         else if (key.startsWith('on') && typeof value === 'function') node.addEventListener(key.slice(2).toLowerCase(), value);
         else if (value === true) node.setAttribute(key, '');
@@ -196,12 +210,523 @@
     return base;
   }
 
+  /* =========================================================
+   * 1.5 서식 있는 글 (안전한 HTML 화이트리스트)
+   *  - 저장은 { text: 평문, html?: 정리된 HTML } 두 가지를 함께 둔다.
+   *  - 화면에 그릴 때도 한 번 더 sanitize 해서 외부(REST)에서 들어온 값도 안전하게 다룬다.
+   * ========================================================= */
+  const RICH_TAGS = new Set(['b', 'strong', 'i', 'em', 'u', 'span', 'br', 'p', 'div']);
+  const RICH_DROP_BLOCK = [
+    'script', 'style', 'iframe', 'object', 'embed', 'svg', 'math', 'template', 'noscript',
+    'head', 'title', 'textarea', 'select', 'button', 'form', 'input', 'img', 'video', 'audio',
+    'canvas', 'link', 'meta', 'base', 'frameset', 'frame', 'applet'
+  ];
+  const STRICT_COLOR = /^(#[0-9a-f]{3,8}|rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*(?:,\s*(?:0|1|0?\.\d+|\d{1,3}%)\s*)?\)|var\(--rt-[a-z]{3,12}\)|[a-z]{3,20})$/i;
+  const HTML_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00a0' };
+
+  function decodeHtmlEntities(value) {
+    return String(value == null ? '' : value).replace(/&(#[xX][0-9a-fA-F]{1,6}|#\d{1,7}|[a-zA-Z][a-zA-Z0-9]{1,31});/g, (match, body) => {
+      if (body.charAt(0) === '#') {
+        const hex = body.charAt(1) === 'x' || body.charAt(1) === 'X';
+        const code = parseInt(body.slice(hex ? 2 : 1), hex ? 16 : 10);
+        if (!Number.isFinite(code) || code <= 0 || code > 0x10ffff) return '';
+        try { return String.fromCodePoint(code); } catch (err) { return ''; }
+      }
+      const key = body.toLowerCase();
+      return Object.prototype.hasOwnProperty.call(HTML_ENTITIES, key) ? HTML_ENTITIES[key] : match;
+    });
+  }
+
+  function escapeHtmlText(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function safeStyleColor(value) {
+    const raw = String(value || '').trim().toLowerCase();
+    if (!raw) return '';
+    if (raw === 'inherit' || raw === 'currentcolor') return 'inherit';
+    return STRICT_COLOR.test(raw) ? raw : '';
+  }
+
+  /* style 속성에서 색만 뽑아 쓴다. 그 밖의 선언(위치·폭·배경이미지 등)은 모두 버린다. */
+  function richStyleDecls(raw) {
+    const out = [];
+    String(raw || '').split(';').forEach((decl) => {
+      const idx = decl.indexOf(':');
+      if (idx < 0) return;
+      const prop = decl.slice(0, idx).trim().toLowerCase();
+      if (prop !== 'color' && prop !== 'background-color') return;
+      const color = safeStyleColor(decl.slice(idx + 1));
+      if (color) out.push(`${prop}: ${color}`);
+    });
+    return out;
+  }
+
+  function sanitizeRichHtml(source) {
+    let text = String(source == null ? '' : source);
+    text = text.replace(/<!--[\s\S]*?-->/g, '');
+    RICH_DROP_BLOCK.forEach((tag) => {
+      text = text.replace(new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?<\\/${tag}\\s*>`, 'gi'), '');
+      text = text.replace(new RegExp(`<\\/?${tag}\\b[^>]*>`, 'gi'), '');
+    });
+
+    let out = '';
+    let index = 0;
+    const stack = [];
+    const tagRe = /<\/?([a-zA-Z][a-zA-Z0-9:-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)>/g;
+    let match = tagRe.exec(text);
+    while (match) {
+      out += escapeHtmlText(decodeHtmlEntities(text.slice(index, match.index)));
+      index = tagRe.lastIndex;
+      const rawTag = match[0];
+      const tag = match[1].toLowerCase();
+      const closing = rawTag.charAt(1) === '/';
+      const selfClosing = /\/>$/.test(rawTag);
+      if (RICH_TAGS.has(tag)) {
+        if (tag === 'br') {
+          out += '<br>';
+        } else if (closing || selfClosing) {
+          for (let depth = stack.length - 1; depth >= 0; depth -= 1) {
+            if (stack[depth].tag === tag) {
+              while (stack.length > depth) out += stack.pop().close;
+              break;
+            }
+          }
+        } else {
+          const styleAttr = /style\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))/i.exec(match[2] || '');
+          const style = styleAttr
+            ? richStyleDecls(styleAttr[2] !== undefined ? styleAttr[2] : (styleAttr[3] !== undefined ? styleAttr[3] : styleAttr[4]))
+            : [];
+          if (tag === 'span') {
+            // 색 정보가 없는 span은 의미가 없으니 버린다.
+            if (style.length) {
+              out += `<span style="${style.join('; ')}">`;
+              stack.push({ tag, close: '</span>' });
+            }
+          } else {
+            let close = `</${tag}>`;
+            out += `<${tag}>`;
+            if (style.length) {
+              out += `<span style="${style.join('; ')}">`;
+              close = `</span>${close}`;
+            }
+            stack.push({ tag, close });
+          }
+        }
+      }
+      match = tagRe.exec(text);
+    }
+    out += escapeHtmlText(decodeHtmlEntities(text.slice(index)));
+    while (stack.length) out += stack.pop().close;
+    return out;
+  }
+
+  /* 화면에 보이는 그대로의 평문 (check.sh·AI 연동·미리보기용) */
+  function richTextToPlain(html) {
+    const plain = decodeHtmlEntities(String(html == null ? '' : html)
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<(div|p)\b[^>]*>/gi, '\n')
+      .replace(/<\/(div|p)\s*>/gi, '')
+      .replace(/<[^>]*>/g, ''));
+    return plain
+      .replace(/\u00a0/g, ' ')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/^[\s\n]+/, '')
+      .replace(/[\s\n]+$/, '');
+  }
+
+  function richHasFormat(html) {
+    return /<\/?(b|strong|i|em|u)\b|style\s*=/i.test(String(html || ''));
+  }
+
+  function plainToEditorHtml(text) {
+    return String(text == null ? '' : text)
+      .split(/\r\n|\r|\n/)
+      .map((line) => escapeHtmlText(line))
+      .join('<br>');
+  }
+
+  function itemRichHtml(item, plainKey) {
+    const stored = item && typeof item.html === 'string' ? item.html : '';
+    if (!stored) return '';
+    const clean = sanitizeRichHtml(stored);
+    return richHasFormat(clean) ? clean : '';
+  }
+
+  function editorHtmlFor(item, plainKey) {
+    return itemRichHtml(item, plainKey) || plainToEditorHtml(item && item[plainKey]);
+  }
+
+  /* 서식이 있으면 안전한 HTML로, 없으면 기존 평문 그대로 그린다 */
+  function richBody(tag, className, item, plainKey) {
+    const node = h(tag, { class: className });
+    const html = itemRichHtml(item, plainKey);
+    if (html) node.innerHTML = html;
+    else node.textContent = String((item && item[plainKey]) || '');
+    return node;
+  }
+
+  /* Firebase 키로 쓸 수 없는 문자(. $ # [ ] /)를 없앤다 */
+  function fbKey(value) {
+    const safe = String(value == null ? '' : value)
+      .trim()
+      .replace(/\s+/g, ' ')
+      .replace(/[.$#\[\]\/\u0000-\u001f\u007f]/g, '_')
+      .slice(0, 40)
+      .trim();
+    return safe || '이름 없음';
+  }
+
+  /* =========================================================
+   * 1.6 서식 툴바 · 편집기 (contenteditable)
+   * ========================================================= */
+  const EDITOR_LIMITS = { memo: 2000, notice: 4000, 'memo-edit': 2000, 'notice-edit': 4000 };
+  const FORMAT_COLORS = [
+    { value: 'inherit', label: '기본' },
+    { value: 'var(--rt-red)', label: '빨강' },
+    { value: 'var(--rt-blue)', label: '파랑' },
+    { value: 'var(--rt-green)', label: '초록' },
+    { value: 'var(--rt-orange)', label: '주황' }
+  ];
+  let savedEditorRange = null;
+
+  function editorLimit(key) {
+    return EDITOR_LIMITS[String(key || '').split(':')[0]] || 2000;
+  }
+
+  function toolbarControls() {
+    const controls = [];
+    const button = (props, ...children) => h('button', Object.assign({ type: 'button', class: 'fmt-btn' }, props), ...children);
+    controls.push(button({ 'data-fmt': 'bold', title: '굵게 (Ctrl+B)', 'aria-label': '굵게' }, h('b', {}, 'B')));
+    controls.push(button({ 'data-fmt': 'italic', title: '기울임 (Ctrl+I)', 'aria-label': '기울임' }, h('i', {}, 'I')));
+    controls.push(button({ 'data-fmt': 'underline', title: '밑줄 (Ctrl+U)', 'aria-label': '밑줄' }, h('u', {}, 'U')));
+    controls.push(h('span', { class: 'fmt-sep', 'aria-hidden': 'true' }));
+    controls.push(h('span', { class: 'fmt-label' }, '글자색'));
+    FORMAT_COLORS.forEach((color) => {
+      controls.push(h('button', {
+        type: 'button',
+        class: `fmt-swatch${color.value === 'inherit' ? ' is-default' : ''}`,
+        'data-fmt': 'color',
+        'data-value': color.value,
+        style: color.value === 'inherit' ? null : `--swatch: ${color.value}`,
+        title: `글자색 ${color.label}`,
+        'aria-label': `글자색 ${color.label}`
+      }));
+    });
+    controls.push(h('span', { class: 'fmt-sep', 'aria-hidden': 'true' }));
+    controls.push(button({ 'data-fmt': 'highlight', class: 'fmt-btn fmt-highlight', title: '형광펜', 'aria-label': '형광펜' }, '형광펜'));
+    controls.push(button({ 'data-fmt': 'clear', title: '서식 지우기', 'aria-label': '서식 지우기' }, '서식 지우기'));
+    return controls;
+  }
+
+  function mountToolbars() {
+    $$('[data-toolbar]').forEach((host) => {
+      if (host.children && host.children.length) return;
+      host.append(...toolbarControls());
+    });
+  }
+
+  function updateEditorEmpty(el) {
+    if (!el) return;
+    const empty = !richTextToPlain(sanitizeRichHtml(el.innerHTML || '')).trim();
+    el.setAttribute('data-empty', empty ? 'true' : 'false');
+  }
+
+  function editorValue(el) {
+    if (!el) return { html: '', text: '' };
+    const clean = sanitizeRichHtml(el.innerHTML || '');
+    return { html: clean, text: richTextToPlain(clean) };
+  }
+
+  function setEditorHtml(el, html) {
+    if (!el) return;
+    el.innerHTML = sanitizeRichHtml(html || '');
+    updateEditorEmpty(el);
+  }
+
+  function caretOffset(el) {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return null;
+    const range = sel.getRangeAt(0);
+    if (!el.contains(range.startContainer)) return null;
+    const pre = range.cloneRange();
+    pre.selectNodeContents(el);
+    try { pre.setEnd(range.startContainer, range.startOffset); } catch (err) { return null; }
+    return pre.toString().length;
+  }
+
+  function setCaretOffset(el, offset) {
+    const target = Math.max(0, Number(offset) || 0);
+    if (typeof document.createTreeWalker !== 'function') return;
+    const walker = document.createTreeWalker(el, 4 /* SHOW_TEXT */);
+    let remaining = target;
+    let node = walker.nextNode();
+    while (node) {
+      const length = node.nodeValue ? node.nodeValue.length : 0;
+      if (remaining <= length) {
+        const range = document.createRange();
+        range.setStart(node, remaining);
+        range.collapse(true);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        return;
+      }
+      remaining -= length;
+      node = walker.nextNode();
+    }
+  }
+
+  function editorSelection(editor) {
+    if (typeof window.getSelection !== 'function') return null;
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount) {
+      const range = sel.getRangeAt(0);
+      if (editor.contains(range.commonAncestorContainer)) return range;
+    }
+    if (savedEditorRange && editor.contains(savedEditorRange.commonAncestorContainer)) {
+      sel.removeAllRanges();
+      sel.addRange(savedEditorRange);
+      return savedEditorRange;
+    }
+    return null;
+  }
+
+  function wrapRange(range, wrapper) {
+    const fragment = range.extractContents();
+    wrapper.appendChild(fragment);
+    range.insertNode(wrapper);
+    const sel = window.getSelection();
+    if (sel) {
+      const next = document.createRange();
+      next.selectNodeContents(wrapper);
+      sel.removeAllRanges();
+      sel.addRange(next);
+    }
+    return wrapper;
+  }
+
+  function unwrapNode(node) {
+    const parent = node.parentNode;
+    if (!parent) return;
+    const first = node.firstChild;
+    const last = node.lastChild;
+    while (node.firstChild) parent.insertBefore(node.firstChild, node);
+    parent.removeChild(node);
+    if (typeof parent.normalize === 'function') parent.normalize();
+    const sel = window.getSelection();
+    if (sel && first && last && first.parentNode && last.parentNode) {
+      try {
+        const range = document.createRange();
+        range.setStartBefore(first);
+        range.setEndAfter(last);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } catch (err) { /* 선택 복원은 실패해도 괜찮다 */ }
+    }
+  }
+
+  function closestTag(node, selector, root) {
+    let el = node && node.nodeType === 1 ? node : (node && node.parentElement ? node.parentElement : null);
+    while (el && el !== root) {
+      if (el.matches && el.matches(selector)) return el;
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  function toggleTag(editor, range, tag) {
+    const existing = closestTag(range.commonAncestorContainer, tag, editor) ||
+      closestTag(range.startContainer, tag, editor);
+    if (existing) unwrapNode(existing);
+    else wrapRange(range, document.createElement(tag));
+  }
+
+  function styleSpan(prop, value) {
+    const span = document.createElement('span');
+    span.setAttribute('style', `${prop}: ${safeStyleColor(value) || 'inherit'}`);
+    return span;
+  }
+
+  function clearEditorFormat(range) {
+    const fragment = range.extractContents();
+    const holder = document.createElement('div');
+    holder.appendChild(fragment);
+    const parts = richTextToPlain(holder.innerHTML).split('\n');
+    const next = document.createDocumentFragment();
+    const nodes = [];
+    parts.forEach((line, index) => {
+      if (index) {
+        const br = document.createElement('br');
+        next.appendChild(br);
+        nodes.push(br);
+      }
+      if (line) {
+        const textNode = document.createTextNode(line);
+        next.appendChild(textNode);
+        nodes.push(textNode);
+      }
+    });
+    if (!nodes.length) return;
+    const first = nodes[0];
+    const last = nodes[nodes.length - 1];
+    range.insertNode(next);
+    const sel = window.getSelection();
+    if (sel && first.parentNode && last.parentNode) {
+      try {
+        const after = document.createRange();
+        after.setStartBefore(first);
+        after.setEndAfter(last);
+        sel.removeAllRanges();
+        sel.addRange(after);
+      } catch (err) { /* 무시 */ }
+    }
+  }
+
+  function applyFormat(fmt, value, editor) {
+    if (!editor) return;
+    editor.focus();
+    const range = editorSelection(editor);
+    if (!range || (range.collapsed && fmt !== 'clear')) {
+      toast('서식을 적용할 글자를 먼저 선택해 주세요.');
+      return;
+    }
+    if (fmt === 'clear') {
+      if (range.collapsed) { toast('서식을 지울 글자를 먼저 선택해 주세요.'); return; }
+      clearEditorFormat(range);
+    } else if (fmt === 'bold') toggleTag(editor, range, 'b');
+    else if (fmt === 'italic') toggleTag(editor, range, 'i');
+    else if (fmt === 'underline') toggleTag(editor, range, 'u');
+    else if (fmt === 'color') wrapRange(range, styleSpan('color', value || 'inherit'));
+    else if (fmt === 'highlight') wrapRange(range, styleSpan('background-color', 'var(--rt-highlight)'));
+    updateEditorEmpty(editor);
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  function insertPlainText(editor, text) {
+    if (!editor || typeof window.getSelection !== 'function') return;
+    editor.focus();
+    const sel = window.getSelection();
+    if (!sel) return;
+    let range = sel.rangeCount ? sel.getRangeAt(0) : null;
+    if (!range || !editor.contains(range.commonAncestorContainer)) {
+      range = document.createRange();
+      range.selectNodeContents(editor);
+      range.collapse(false);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+    range.deleteContents();
+    const lines = String(text == null ? '' : text).split(/\r\n|\r|\n/);
+    const fragment = document.createDocumentFragment();
+    const nodes = [];
+    lines.forEach((line, index) => {
+      if (index) {
+        const br = document.createElement('br');
+        fragment.appendChild(br);
+        nodes.push(br);
+      }
+      if (line) {
+        const textNode = document.createTextNode(line);
+        fragment.appendChild(textNode);
+        nodes.push(textNode);
+      }
+    });
+    if (!nodes.length) return;
+    const last = nodes[nodes.length - 1];
+    range.insertNode(fragment);
+    try {
+      const after = document.createRange();
+      after.setStartAfter(last);
+      after.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(after);
+    } catch (err) { /* 무시 */ }
+    updateEditorEmpty(editor);
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  /* 붙여넣기는 서식·HTML을 버리고 글자만 넣는다 (엉뚱한 태그가 들어오지 않게) */
+  function onEditorPaste(event, options) {
+    const editor = event.target.closest('[data-editor]');
+    if (!editor) return;
+    const clipboard = event.clipboardData;
+    if (!clipboard) return;
+    const files = [];
+    if (clipboard.files && clipboard.files.length) files.push(...Array.from(clipboard.files));
+    else if (clipboard.items) {
+      Array.from(clipboard.items).forEach((item) => {
+        if (item.kind !== 'file') return;
+        const file = item.getAsFile();
+        if (file) files.push(file);
+      });
+    }
+    if (files.length) {
+      event.preventDefault();
+      if (!options || !options.allowFiles) {
+        toast('이 칸에는 글자만 붙여넣을 수 있습니다.');
+        return;
+      }
+      addPendingFiles(files);
+      toast(files.length === 1 ? '붙여넣은 파일을 첨부에 더했습니다.' : `붙여넣은 파일 ${files.length}개를 첨부에 더했습니다.`);
+      return;
+    }
+    event.preventDefault();
+    insertPlainText(editor, clipboard.getData('text/plain') || clipboard.getData('text') || '');
+  }
+
+  function onEditorKeydown(event) {
+    const editor = event.target.closest('[data-editor]');
+    if (!editor) return;
+    const meta = event.metaKey || event.ctrlKey;
+    if (!meta) return;
+    const key = String(event.key || '').toLowerCase();
+    if (key !== 'b' && key !== 'i' && key !== 'u') return;
+    event.preventDefault();
+    applyFormat(key === 'b' ? 'bold' : (key === 'i' ? 'italic' : 'underline'), null, editor);
+  }
+
+  function onToolbarClick(event) {
+    const button = event.target.closest ? event.target.closest('[data-fmt]') : null;
+    if (!button) return;
+    event.preventDefault();
+    const shell = button.closest('.editor-shell');
+    const editor = shell ? shell.querySelector('[data-editor]') : null;
+    applyFormat(button.getAttribute('data-fmt'), button.getAttribute('data-value'), editor);
+  }
+
+  function onToolbarMouseDown(event) {
+    if (event.target.closest && event.target.closest('[data-fmt]')) event.preventDefault();
+  }
+
+  function trackEditorSelection() {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return;
+    const range = sel.getRangeAt(0);
+    const node = range.startContainer;
+    const el = node && node.nodeType === 1 ? node : (node && node.parentElement ? node.parentElement : null);
+    const editor = el && el.closest ? el.closest('[data-editor]') : null;
+    if (editor) savedEditorRange = range.cloneRange();
+  }
+
   /* 다시 그릴 때 입력 중이던 칸과 커서 위치를 되살린다 (다른 사람의 글이 실시간으로 들어와도 타이핑이 끊기지 않게) */
-  const FOCUS_ATTRS = ['data-reply-text', 'data-reply-author', 'data-reply-edit-text', 'data-edit-text', 'data-notice-reply-text'];
+  const FOCUS_ATTRS = ['data-reply-text', 'data-reply-author', 'data-reply-edit-text', 'data-edit-text', 'data-notice-reply-text', 'data-editor'];
 
   function rememberFocus(root) {
     const el = document.activeElement;
-    if (!root || !el || !root.contains(el) || !el.matches('input, textarea, select')) return null;
+    if (!root || !el || !root.contains(el)) return null;
+    if (el.matches('[contenteditable="true"]')) {
+      const key = el.getAttribute('data-editor');
+      if (!key) return null;
+      const offset = caretOffset(el);
+      return { selector: `[data-editor="${key}"]`, rich: true, start: offset, end: offset };
+    }
+    if (!el.matches('input, textarea, select')) return null;
     let selector = '';
     for (const attr of FOCUS_ATTRS) {
       const value = el.getAttribute(attr);
@@ -229,6 +754,10 @@
     const el = root.querySelector(saved.selector);
     if (!el) return;
     el.focus();
+    if (saved.rich) {
+      if (typeof saved.start === 'number') setCaretOffset(el, saved.start);
+      return;
+    }
     if (typeof saved.start === 'number') {
       try { el.setSelectionRange(saved.start, saved.end); } catch (err) { /* 무시 */ }
     }
@@ -295,8 +824,11 @@
 
   function boot() {
     cacheDom();
+    mountToolbars();
     bindEvents();
     hydrateAuthorFields();
+    initNotifyState();
+    [dom.memoText, dom.noticeText].forEach((editor) => { if (editor) updateEditorEmpty(editor); });
 
     if (!isConfigured()) {
       hideBoot();
@@ -334,6 +866,12 @@
     dom.connectionText = $('#connection-text');
     dom.lockButton = $('#lock-button');
     dom.tabs = $$('.tab');
+
+    dom.notifyToggle = $('#notify-toggle');
+    dom.notifyBanner = $('#notify-banner');
+    dom.notifyBannerTitle = $('#notify-banner-title');
+    dom.notifyBannerText = $('#notify-banner-text');
+    dom.notifyBannerClose = $('#notify-banner-close');
 
     dom.memoForm = $('#memo-form');
     dom.memoAuthor = $('#memo-author');
@@ -396,7 +934,18 @@
       if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
         event.preventDefault();
         dom.memoForm.requestSubmit();
+        return;
       }
+      onEditorKeydown(event);
+    });
+    dom.memoText.addEventListener('input', () => updateEditorEmpty(dom.memoText));
+    if (dom.notifyToggle) dom.notifyToggle.addEventListener('click', onToggleNotify);
+    if (dom.notifyBannerClose) dom.notifyBannerClose.addEventListener('click', hideNotifyBanner);
+    if (dom.notifyBanner) dom.notifyBanner.addEventListener('click', (event) => {
+      if (event.target.closest('button')) return;
+      const memoId = dom.notifyBanner.getAttribute('data-memo');
+      hideNotifyBanner();
+      if (memoId) focusMemo(memoId);
     });
 
     // --- 첨부 파일 ---
@@ -414,13 +963,15 @@
         removePendingFile(Number(button.getAttribute('data-remove-file')));
       });
     }
-    if (dom.memoText) dom.memoText.addEventListener('paste', onMemoPaste);
+    if (dom.memoText) dom.memoText.addEventListener('paste', (event) => onEditorPaste(event, { allowFiles: true }));
     bindMemoDrop();
 
     dom.memoList.addEventListener('click', onMemoClick);
     dom.memoList.addEventListener('change', onMemoChange);
     dom.memoList.addEventListener('submit', onReplySubmit);
     dom.memoList.addEventListener('input', onMemoInput);
+    dom.memoList.addEventListener('keydown', onEditorKeydown);
+    dom.memoList.addEventListener('paste', (event) => onEditorPaste(event, { allowFiles: true }));
     dom.memoFilter.addEventListener('click', (event) => {
       const chip = event.target.closest('[data-filter]');
       if (!chip) return;
@@ -438,13 +989,22 @@
       if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
         event.preventDefault();
         dom.noticeForm.requestSubmit();
+        return;
       }
+      onEditorKeydown(event);
     });
+    dom.noticeText.addEventListener('input', () => updateEditorEmpty(dom.noticeText));
     dom.noticeList.addEventListener('click', onNoticeClick);
     dom.noticeList.addEventListener('submit', onNoticeEditSubmit);
     dom.noticeList.addEventListener('submit', onReplySubmit);
     dom.noticeList.addEventListener('input', onNoticeDraftInput);
     dom.noticeList.addEventListener('change', onNoticeDraftInput);
+    dom.noticeList.addEventListener('keydown', onEditorKeydown);
+    dom.noticeList.addEventListener('paste', (event) => onEditorPaste(event, { allowFiles: false }));
+
+    document.addEventListener('click', onToolbarClick);
+    document.addEventListener('mousedown', onToolbarMouseDown);
+    document.addEventListener('selectionchange', trackEditorSelection);
 
     dom.aiContent.addEventListener('click', onAiClick);
 
@@ -561,6 +1121,8 @@
     state.images = {};
     state.notices = {};
     state.imagesLoaded = false;
+    state.memosLoaded = false;
+    state.ownMemoIds.clear();
     state.editing = { memo: null, notice: null, reply: null };
     state.drafts = { memo: '', notice: {} };
     state.openReplies.clear();
@@ -642,7 +1204,11 @@
     };
 
     listen(state.base.child('memos'), 'value', (snap) => {
-      state.memos = snap.val() || {};
+      const previous = state.memos || {};
+      const next = snap.val() || {};
+      if (state.memosLoaded) announceNewActivity(previous, next);
+      state.memos = next;
+      state.memosLoaded = true;
       renderMemos();
     });
     listen(state.base.child('notices'), 'value', (snap) => {
@@ -686,6 +1252,156 @@
   }
 
   /* =========================================================
+   * 4.5 브라우저 알림 (새 보고 · 업무 완료)
+   * ========================================================= */
+  function notifySupported() {
+    return typeof window !== 'undefined' && 'Notification' in window;
+  }
+
+  function notifyPermission() {
+    return notifySupported() ? window.Notification.permission : 'unsupported';
+  }
+
+  function initNotifyState() {
+    const saved = localStorage.getItem(LS.notify) === '1';
+    state.notifyEnabled = saved && notifyPermission() === 'granted';
+    if (saved && !state.notifyEnabled) localStorage.removeItem(LS.notify);
+    renderNotifyToggle();
+  }
+
+  function renderNotifyToggle() {
+    if (!dom.notifyToggle) return;
+    const on = !!state.notifyEnabled;
+    dom.notifyToggle.textContent = on ? '🔔 알림' : '🔕 알림 꺼짐';
+    dom.notifyToggle.classList.toggle('is-on', on);
+    dom.notifyToggle.setAttribute('aria-pressed', on ? 'true' : 'false');
+    dom.notifyToggle.title = on
+      ? '새 보고·업무 완료를 브라우저 알림으로 받고 있습니다. 누르면 끕니다.'
+      : '새 보고·업무 완료를 브라우저 알림으로 받습니다.';
+  }
+
+  function setNotifyEnabled(on) {
+    state.notifyEnabled = !!on;
+    if (state.notifyEnabled) localStorage.setItem(LS.notify, '1');
+    else localStorage.removeItem(LS.notify);
+    renderNotifyToggle();
+  }
+
+  async function onToggleNotify() {
+    if (state.notifyEnabled) {
+      setNotifyEnabled(false);
+      toast('브라우저 알림을 껐습니다.');
+      return;
+    }
+    if (!notifySupported()) {
+      toast('이 브라우저는 알림을 지원하지 않습니다. 화면 안 알림 배너만 보여 드립니다.');
+      return;
+    }
+    let permission = notifyPermission();
+    if (permission === 'default') {
+      try {
+        permission = await window.Notification.requestPermission();
+      } catch (err) {
+        permission = 'denied';
+      }
+    }
+    if (permission !== 'granted') {
+      setNotifyEnabled(false);
+      toast('브라우저가 알림을 막고 있습니다. 주소창 옆 사이트 설정에서 알림을 허용한 뒤 다시 눌러 주세요.');
+      return;
+    }
+    setNotifyEnabled(true);
+    toast('브라우저 알림을 켰습니다. 새 보고와 업무 완료 소식을 알려 드립니다.');
+    showBrowserNotification('합동 비서실 알림을 켰습니다', '새 보고와 업무 완료 소식을 이 브라우저로 알려 드립니다.', '');
+  }
+
+  function summarizeText(value) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    return text.length > 120 ? `${text.slice(0, 120)}…` : text;
+  }
+
+  let notifyBannerTimer = 0;
+
+  function showNotifyBanner(title, body, memoId) {
+    if (!dom.notifyBanner) return;
+    if (dom.notifyBannerTitle) dom.notifyBannerTitle.textContent = title;
+    if (dom.notifyBannerText) dom.notifyBannerText.textContent = body || '내용 없음';
+    dom.notifyBanner.setAttribute('data-memo', memoId || '');
+    dom.notifyBanner.hidden = false;
+    window.clearTimeout(notifyBannerTimer);
+    notifyBannerTimer = window.setTimeout(hideNotifyBanner, 12000);
+  }
+
+  function hideNotifyBanner() {
+    if (!dom.notifyBanner) return;
+    window.clearTimeout(notifyBannerTimer);
+    dom.notifyBanner.hidden = true;
+  }
+
+  function focusMemo(memoId) {
+    if (!memoId || !dom.memoList) return;
+    selectTab('memos');
+    if (state.filters.memo !== 'all') {
+      state.filters.memo = 'all';
+      renderMemos();
+    }
+    const card = dom.memoList.querySelector(`[data-id="${memoId}"]`);
+    if (!card) return;
+    if (typeof card.scrollIntoView === 'function') card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (card.classList) {
+      card.classList.add('is-flash');
+      window.setTimeout(() => card.classList.remove('is-flash'), 2400);
+    }
+  }
+
+  function showBrowserNotification(title, body, memoId) {
+    if (!state.notifyEnabled || !notifySupported() || notifyPermission() !== 'granted') return;
+    try {
+      const note = new window.Notification(title, {
+        body: body || '내용 없음',
+        tag: memoId ? `office-${memoId}` : 'office-notify-on'
+      });
+      note.onclick = () => {
+        try { window.focus(); } catch (err) { /* 무시 */ }
+        if (memoId) focusMemo(memoId);
+        note.close();
+      };
+    } catch (err) {
+      // 모바일 크롬처럼 new Notification()을 허용하지 않는 브라우저는 화면 안 배너로만 알린다.
+    }
+  }
+
+  /* 초기 로딩 이후 새로 들어온 보고·완료 소식만 골라 알린다 */
+  function announceNewActivity(previous, next) {
+    const events = [];
+    const me = currentAuthor();
+    Object.keys(next || {}).forEach((id) => {
+      const memo = next[id];
+      if (!memo || typeof memo !== 'object') return;
+      if (state.ownMemoIds.has(id)) return;
+      const author = String(memo.author || '');
+      if (me && author === me && Date.now() - (Number(memo.createdAt) || 0) < 20000) return;
+      const before = previous ? previous[id] : null;
+      if (!before) {
+        if (memo.tag === '보고' || memo.done === true) {
+          events.push({ kind: memo.tag === '보고' ? 'report' : 'done', id, memo });
+        }
+      } else if (before.done !== true && memo.done === true) {
+        events.push({ kind: 'done', id, memo });
+      }
+    });
+    if (!events.length) return;
+    events.sort((a, b) => (Number(a.memo.createdAt) || 0) - (Number(b.memo.createdAt) || 0));
+    events.slice(-3).forEach((event) => {
+      const author = event.memo.author || '이름 없음';
+      const title = event.kind === 'report' ? `새 보고 · ${author}` : `업무 완료 · ${author}`;
+      const body = summarizeText(event.memo.text || '');
+      showNotifyBanner(event.kind === 'report' ? `📝 ${title}` : `✅ ${title}`, body, event.id);
+      showBrowserNotification(title, body, event.id);
+    });
+  }
+
+  /* =========================================================
    * 5. 탭
    * ========================================================= */
   function selectTab(name) {
@@ -726,12 +1442,18 @@
     event.preventDefault();
     const author = dom.memoAuthor.value.trim() || '이름 없음';
     const tag = dom.memoTag.value;
-    const text = dom.memoText.value.trim();
+    const value = editorValue(dom.memoText);
+    const text = value.text.trim();
     const pending = state.pendingFiles.slice();
 
     if (!text && !pending.length) {
       dom.memoText.focus();
       toast('내용을 입력하거나 파일을 첨부해 주세요.');
+      return;
+    }
+    if (text.length > EDITOR_LIMITS.memo) {
+      dom.memoText.focus();
+      toast(`내용은 ${EDITOR_LIMITS.memo}자까지 쓸 수 있습니다. 지금은 ${text.length}자입니다.`);
       return;
     }
     const problem = validatePendingFiles();
@@ -756,11 +1478,14 @@
       }
 
       const memo = { author, tag, text, done: false, createdAt: Date.now() };
+      if (richHasFormat(value.html)) memo.html = value.html;
       if (attachments.length) memo.attachments = attachments;
       await memoRef.set(memo);
+      state.ownMemoIds.add(memoId);
 
       clearPendingFiles();
-      dom.memoText.value = '';
+      setEditorHtml(dom.memoText, '');
+      dom.memoText.focus();
       setAttachNote('');
       localStorage.setItem(LS.author, author);
       hydrateAuthorFields();
@@ -874,25 +1599,6 @@
     if (!state.pendingFiles.length) setAttachNote('');
     else if (problem) setAttachNote(problem, true);
     else setAttachNote(`${state.pendingFiles.length}개 · ${fmtBytes(total)} · 등록을 누르면 함께 올라갑니다.`, false);
-  }
-
-  function onMemoPaste(event) {
-    const clipboard = event.clipboardData;
-    if (!clipboard) return;
-    const files = [];
-    if (clipboard.files && clipboard.files.length) {
-      files.push(...Array.from(clipboard.files));
-    } else if (clipboard.items) {
-      Array.from(clipboard.items).forEach((item) => {
-        if (item.kind !== 'file') return;
-        const file = item.getAsFile();
-        if (file) files.push(file);
-      });
-    }
-    if (!files.length) return; // 글자 붙여넣기는 그대로 둔다.
-    event.preventDefault();
-    addPendingFiles(files);
-    toast(files.length === 1 ? '붙여넣은 파일을 첨부에 더했습니다.' : `붙여넣은 파일 ${files.length}개를 첨부에 더했습니다.`);
   }
 
   function bindMemoDrop() {
@@ -1217,6 +1923,102 @@
     dom.memoBadge.hidden = openCount === 0;
   }
 
+  /* ---------- 이모지 반응 ---------- */
+
+  function currentAuthor() {
+    const fields = [dom.memoAuthor, dom.noticeAuthor];
+    for (let index = 0; index < fields.length; index += 1) {
+      const value = fields[index] && fields[index].value ? String(fields[index].value).trim() : '';
+      if (value) return value;
+    }
+    const saved = localStorage.getItem(LS.author) || '';
+    return saved.trim();
+  }
+
+  function focusAuthorField(node) {
+    const field = node === 'notices' ? dom.noticeAuthor : dom.memoAuthor;
+    if (field) field.focus();
+  }
+
+  function reactionWho(reactions, emoji) {
+    const bucket = reactions && reactions[emoji];
+    if (!bucket || typeof bucket !== 'object') return [];
+    return Object.keys(bucket).filter((key) => bucket[key]);
+  }
+
+  function reactionBar(node, parentId, replyId, reactions, variant) {
+    const me = fbKey(currentAuthor());
+    const bar = h('div', {
+      class: `reactions${variant === 'reply' ? ' reactions-sm' : ''}`,
+      role: 'group',
+      'aria-label': '이모지 반응'
+    });
+    REACTIONS.forEach(({ emoji, label }) => {
+      const who = reactionWho(reactions, emoji);
+      const on = !!currentAuthor() && who.indexOf(me) >= 0;
+      const tip = who.length ? `${emoji} ${label} · ${who.join(', ')}` : `${emoji} ${label} 남기기`;
+      const button = h('button', {
+        type: 'button',
+        class: `reaction${on ? ' is-on' : ''}${who.length ? '' : ' is-zero'}`,
+        'data-action': 'react',
+        'data-node': node,
+        'data-id': parentId,
+        'data-emoji': emoji,
+        'aria-pressed': on ? 'true' : 'false',
+        'aria-label': `${label} ${emoji}${who.length ? ` ${who.length}명 (${who.join(', ')})` : ' 남기기'}`,
+        title: tip
+      }, h('span', { class: 'reaction-emoji', 'aria-hidden': 'true' }, emoji),
+        who.length ? h('span', { class: 'reaction-count' }, String(who.length)) : null);
+      if (replyId) button.dataset.reply = replyId;
+      if (who.length) button.setAttribute('data-who', tip);
+      bar.append(button);
+    });
+    return bar;
+  }
+
+  async function toggleReaction(node, parentId, replyId, emoji) {
+    if (!emoji) return;
+    const author = currentAuthor();
+    if (!author) {
+      toast('먼저 작성자 이름을 입력해 주세요. 이름이 있어야 누가 남긴 반응인지 표시됩니다.');
+      focusAuthorField(node);
+      return;
+    }
+    const parent = node === 'notices' ? state.notices[parentId] : state.memos[parentId];
+    if (!parent || typeof parent !== 'object') return;
+    const target = replyId ? (parent.replies && parent.replies[replyId]) : parent;
+    if (!target || typeof target !== 'object') return;
+
+    const key = fbKey(author);
+    const before = target.reactions ? JSON.parse(JSON.stringify(target.reactions)) : null;
+    const bucket = before && before[emoji] && typeof before[emoji] === 'object' ? before[emoji] : {};
+    const on = !!bucket[key];
+    const next = Object.assign({}, bucket);
+    if (on) delete next[key];
+    else next[key] = true;
+
+    const reactions = Object.assign({}, before || {});
+    if (Object.keys(next).length) reactions[emoji] = next;
+    else delete reactions[emoji];
+    if (Object.keys(reactions).length) target.reactions = reactions;
+    else delete target.reactions;
+    renderFor(node);
+
+    const path = replyId
+      ? `${node}/${parentId}/replies/${replyId}/reactions/${emoji}/${key}`
+      : `${node}/${parentId}/reactions/${emoji}/${key}`;
+    try {
+      if (on) await childRef(path).remove();
+      else await childRef(path).set(true);
+      if (!on) localStorage.setItem(LS.author, author);
+    } catch (err) {
+      if (before) target.reactions = before;
+      else delete target.reactions;
+      renderFor(node);
+      toast(`반응을 저장하지 못했습니다: ${err.message || err}`);
+    }
+  }
+
   function memoCard(memo) {
     const editing = state.editing.memo === memo.id;
     const replies = Object.entries(memo.replies || {})
@@ -1237,20 +2039,28 @@
       ),
       editing
         ? h('div', { class: 'memo-edit' },
-            h('textarea', {
-              class: 'input textarea',
-              rows: 3,
-              maxlength: 2000,
-              'data-edit-text': memo.id,
-              'aria-label': '글 내용 수정'
-            }, state.drafts.memo),
+            h('div', { class: 'editor-shell' },
+              h('div', { class: 'editor-toolbar', role: 'toolbar', 'aria-label': '본문 서식' }, ...toolbarControls()),
+              h('div', {
+                class: 'input textarea editor',
+                contenteditable: 'true',
+                role: 'textbox',
+                'aria-multiline': 'true',
+                'aria-label': '글 내용 수정',
+                'data-editor': `memo-edit:${memo.id}`,
+                'data-empty': 'true',
+                'data-placeholder': '글 내용을 적어 주세요.',
+                html: state.drafts.memo
+              })
+            ),
             h('div', { class: 'memo-edit-actions' },
               h('button', { type: 'button', class: 'btn ghost small', 'data-action': 'cancel-edit' }, '취소'),
               h('button', { type: 'button', class: 'btn primary small', 'data-action': 'save-edit', 'data-id': memo.id }, '저장')
             )
           )
-        : (memo.text ? h('p', { class: 'memo-text' }, memo.text) : null),
+        : (memo.text || itemRichHtml(memo, 'text') ? richBody('p', 'memo-text', memo, 'text') : null),
       attachmentBlock(memo),
+      reactionBar('memos', memo.id, '', memo.reactions),
       h('div', { class: 'memo-actions' },
         h('button', { type: 'button', class: 'text-btn', 'data-action': 'edit', 'data-id': memo.id }, '수정'),
         h('button', { type: 'button', class: 'text-btn', 'data-action': 'toggle-replies', 'data-id': memo.id }, replies.length ? `답글 ${replies.length}` : '답글'),
@@ -1329,7 +2139,8 @@
         )
       : h('p', { class: 'reply-text' }, reply.text || '');
 
-    return h('li', { class: 'reply' }, head, body, attachmentsBlock(files, 'reply-files'));
+    return h('li', { class: 'reply' }, head, body, attachmentsBlock(files, 'reply-files'),
+      reactionBar(node, parent.id, reply.id, reply.reactions, 'reply'));
   }
 
   function replyPendingBlock(memoId, pending) {
@@ -1530,6 +2341,7 @@
     else if (action === 'reply-remove-file') removeReplyFile(id, Number(button.dataset.index));
     else if (action === 'download-file') downloadMemoFile(button.dataset.fileId, button);
     else if (action === 'preview-file') openMemoFilePreview(button.dataset.fileId);
+    else if (action === 'react') toggleReaction(button.dataset.node || 'memos', id, button.dataset.reply || '', button.dataset.emoji);
   }
 
   function onMemoChange(event) {
@@ -1551,6 +2363,12 @@
   }
 
   function onMemoInput(event) {
+    if (event.target.matches('[data-editor]')) {
+      const key = event.target.getAttribute('data-editor') || '';
+      updateEditorEmpty(event.target);
+      if (key.indexOf('memo-edit:') === 0) state.drafts.memo = event.target.innerHTML || '';
+      return;
+    }
     if (event.target.matches('[data-edit-text]')) {
       state.drafts.memo = event.target.value;
       return;
@@ -1628,12 +2446,12 @@
     const memo = state.memos[id];
     if (!memo) return;
     state.editing.memo = id;
-    state.drafts.memo = memo.text || '';
+    state.drafts.memo = editorHtmlFor(memo, 'text');
     renderMemos();
-    const textarea = dom.memoList.querySelector(`[data-edit-text="${id}"]`);
-    if (textarea) {
-      textarea.focus();
-      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    const editor = dom.memoList.querySelector(`[data-editor="memo-edit:${id}"]`);
+    if (editor) {
+      editor.focus();
+      setCaretOffset(editor, richTextToPlain(editor.innerHTML || '').length);
     }
   }
 
@@ -1644,13 +2462,27 @@
   }
 
   async function saveMemoEdit(id) {
-    const text = state.drafts.memo.trim();
+    const editor = dom.memoList.querySelector(`[data-editor="memo-edit:${id}"]`);
+    const value = editor
+      ? editorValue(editor)
+      : { html: sanitizeRichHtml(state.drafts.memo || ''), text: richTextToPlain(state.drafts.memo || '') };
+    const text = value.text.trim();
     if (!text) {
+      if (editor) editor.focus();
       toast('내용을 입력해 주세요.');
       return;
     }
+    if (text.length > EDITOR_LIMITS['memo-edit']) {
+      if (editor) editor.focus();
+      toast(`내용은 ${EDITOR_LIMITS['memo-edit']}자까지 쓸 수 있습니다. 지금은 ${text.length}자입니다.`);
+      return;
+    }
     try {
-      await childRef(`memos/${id}`).update({ text, updatedAt: Date.now() });
+      await childRef(`memos/${id}`).update({
+        text,
+        html: richHasFormat(value.html) ? value.html : null,
+        updatedAt: Date.now()
+      });
       state.editing.memo = null;
       state.drafts.memo = '';
       renderMemos();
@@ -2019,7 +2851,8 @@
           ? h('span', {}, `수정 ${fmtStamp(item.updatedAt)}`)
           : null
       ),
-      item.content ? h('p', { class: 'notice-content' }, item.content) : null,
+      (item.content || itemRichHtml(item, 'content')) ? richBody('p', 'notice-content', item, 'content') : null,
+      reactionBar('notices', item.id, '', item.reactions),
       h('div', { class: 'notice-actions' },
         h('button', { type: 'button', class: 'text-btn', 'data-action': 'edit-notice', 'data-id': item.id }, '수정'),
         h('button', {
@@ -2068,9 +2901,20 @@
             h('span', {}, '상단 고정')
           )
         ),
-        h('label', { class: 'field span-2' },
+        h('div', { class: 'field span-2 editor-shell' },
           h('span', { class: 'field-label' }, '내용'),
-          h('textarea', { class: 'input textarea', rows: 5, maxlength: 4000, 'data-field': 'content' }, value('content'))
+          h('div', { class: 'editor-toolbar', role: 'toolbar', 'aria-label': '본문 서식' }, ...toolbarControls()),
+          h('div', {
+            class: 'input textarea editor',
+            contenteditable: 'true',
+            role: 'textbox',
+            'aria-multiline': 'true',
+            'aria-label': '공지 내용 수정',
+            'data-editor': `notice-edit:${item.id}`,
+            'data-empty': 'true',
+            'data-placeholder': '공지 내용을 적어 주세요.',
+            html: draft.content !== undefined ? draft.content : editorHtmlFor(item, 'content')
+          })
         )
       ),
       h('div', { class: 'row-actions end' },
@@ -2083,7 +2927,8 @@
   async function onAddNotice(event) {
     event.preventDefault();
     const title = dom.noticeTitle.value.trim();
-    const content = dom.noticeText.value.trim();
+    const value = editorValue(dom.noticeText);
+    const content = value.text.trim();
     const author = dom.noticeAuthor.value.trim() || '이름 없음';
 
     if (!title) {
@@ -2096,11 +2941,16 @@
       toast('공지 내용을 입력해 주세요.');
       return;
     }
+    if (content.length > EDITOR_LIMITS.notice) {
+      dom.noticeText.focus();
+      toast(`공지 내용은 ${EDITOR_LIMITS.notice}자까지 쓸 수 있습니다. 지금은 ${content.length}자입니다.`);
+      return;
+    }
 
     const now = Date.now();
     setNoticeBusy(true);
     try {
-      await childRef('notices').push({
+      const notice = {
         title,
         author,
         content,
@@ -2108,9 +2958,11 @@
         pinned: !!dom.noticePinned.checked,
         createdAt: now,
         updatedAt: now
-      });
+      };
+      if (richHasFormat(value.html)) notice.html = value.html;
+      await childRef('notices').push(notice);
       dom.noticeTitle.value = '';
-      dom.noticeText.value = '';
+      setEditorHtml(dom.noticeText, '');
       dom.noticeImportant.checked = false;
       dom.noticePinned.checked = false;
       localStorage.setItem(LS.author, author);
@@ -2142,6 +2994,7 @@
     else if (action === 'save-reply-edit') saveReplyEdit();
     else if (action === 'delete-reply') deleteReply('notices', id, button.dataset.reply);
     else if (action === 'delete-notice') deleteNotice(id);
+    else if (action === 'react') toggleReaction('notices', id, button.dataset.reply || '', button.dataset.emoji);
   }
 
   function startNoticeEdit(id) {
@@ -2164,10 +3017,18 @@
     const item = state.notices[id] || {};
     const draft = state.drafts.notice[id] || {};
     const pick = (key) => (draft[key] !== undefined ? draft[key] : item[key]);
+    const editor = dom.noticeList.querySelector(`[data-editor="notice-edit:${id}"]`);
+    const value = editor
+      ? editorValue(editor)
+      : {
+        html: sanitizeRichHtml(draft.content !== undefined ? draft.content : editorHtmlFor(item, 'content')),
+        text: ''
+      };
     const next = {
       title: String(pick('title') || '').trim(),
       author: String(pick('author') || '').trim(),
-      content: String(pick('content') || '').trim(),
+      content: value.text.trim(),
+      html: richHasFormat(value.html) ? value.html : null,
       important: !!pick('important'),
       pinned: !!pick('pinned'),
       updatedAt: Date.now()
@@ -2177,7 +3038,13 @@
       return;
     }
     if (!next.content) {
+      if (editor) editor.focus();
       toast('내용을 입력해 주세요.');
+      return;
+    }
+    if (next.content.length > EDITOR_LIMITS['notice-edit']) {
+      if (editor) editor.focus();
+      toast(`내용은 ${EDITOR_LIMITS['notice-edit']}자까지 쓸 수 있습니다. 지금은 ${next.content.length}자입니다.`);
       return;
     }
     try {
@@ -2229,6 +3096,16 @@
   }
 
   function onNoticeDraftInput(event) {
+    if (event.target.matches('[data-editor]')) {
+      const key = event.target.getAttribute('data-editor') || '';
+      updateEditorEmpty(event.target);
+      if (key.indexOf('notice-edit:') === 0) {
+        const id = key.slice('notice-edit:'.length);
+        state.drafts.notice[id] = state.drafts.notice[id] || {};
+        state.drafts.notice[id].content = event.target.innerHTML || '';
+      }
+      return;
+    }
     if (event.target.matches('[data-reply-edit-text]')) {
       state.replyEditDrafts[event.target.getAttribute('data-reply-edit-text')] = event.target.value;
       return;
@@ -2320,6 +3197,28 @@
         ``,
         `# 5) 삭제 (DELETE)`,
         `curl -X DELETE "${base}/memos/{글ID}.json"`
+      ].join('\n')
+    ));
+
+    root.append(codeCard(
+      '서식(굵게·색·형광펜)과 이모지 반응',
+      '본문은 평문(text)과 서식 있는 HTML(html, 선택)을 함께 저장합니다. 화면·AI 판독·정기 확인(check.sh)은 평문 text를 쓰고, 보여 줄 때는 html을 화이트리스트로 다시 정리해 그립니다. 이모지 반응은 글·답글·공지 아래 reactions/{이모지}/{이름} = true 로 쌓입니다.',
+      [
+        `# 서식 있는 업무 공유 등록 (html은 넣어도 되고 빼도 됩니다)`,
+        `curl -X POST -H "Content-Type: application/json" \\`,
+        `  -d '{"author":"AI비서","tag":"보고","text":"중요 보고입니다.","html":"<b>중요</b> <span style=\\"color: var(--rt-red)\\">보고</span>입니다.","done":false,"createdAt":1795768800000}' \\`,
+        `  "${base}/memos.json"`,
+        ``,
+        `# 이모지 반응 남기기 / 취소하기 (PUT·DELETE — 이름의 공백은 URL 인코딩)`,
+        `curl -X PUT -H "Content-Type: application/json" -d 'true' \\`,
+        `  "${base}/memos/{글ID}/reactions/%E2%9C%85/%EB%B3%84%20%EA%B3%BC%EC%9E%A5.json"`,
+        `curl -X DELETE "${base}/memos/{글ID}/reactions/%E2%9C%85/%EB%B3%84%20%EA%B3%BC%EC%9E%A5.json"`,
+        ``,
+        `# 반응 전체 보기 (누가 눌렀는지 포함)`,
+        `curl "${base}/memos/{글ID}/reactions.json"`,
+        ``,
+        `# 답글은 replies/{답글ID}/reactions/{이모지}/{이름}, 공지는 notices/{공지ID}/reactions/... 로 같습니다.`,
+        `# 이모지 키: ✅ 👍 ❤️ 👏 👀 (URL에서는 %E2%9C%85 처럼 인코딩됩니다)`
       ].join('\n')
     ));
 

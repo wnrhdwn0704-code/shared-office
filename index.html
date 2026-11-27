@@ -10,7 +10,7 @@
   <meta name="theme-color" content="#0e1116" media="(prefers-color-scheme: dark)" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%230f766e'/%3E%3Cpath d='M20 23h24M20 32h24M20 41h15' stroke='white' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
-  <link rel="stylesheet" href="style.css?v=20261128c" />
+  <link rel="stylesheet" href="style.css?v=20261128d" />
 </head>
 <body>
 
@@ -63,7 +63,10 @@
             <span id="connection" class="conn is-off"><i class="dot" aria-hidden="true"></i><span id="connection-text">연결 중…</span></span>
           </div>
         </div>
-        <button id="lock-button" class="btn ghost small" type="button">잠금</button>
+        <div class="appbar-actions">
+          <button id="notify-toggle" class="btn ghost small notify-toggle" type="button" aria-pressed="false" title="새 보고·업무 완료를 브라우저 알림으로 받습니다">🔕 알림 꺼짐</button>
+          <button id="lock-button" class="btn ghost small" type="button">잠금</button>
+        </div>
       </div>
 
       <nav class="tabbar" role="tablist" aria-label="비서실 메뉴">
@@ -88,6 +91,15 @@
     </header>
 
     <main class="wrap">
+      <div id="notify-banner" class="notify-banner" role="status" aria-live="polite" hidden>
+        <span class="notify-banner-icon" aria-hidden="true">🔔</span>
+        <div class="notify-banner-body">
+          <strong id="notify-banner-title"></strong>
+          <span id="notify-banner-text"></span>
+        </div>
+        <button id="notify-banner-close" class="icon-btn" type="button" aria-label="알림 닫기">✕</button>
+      </div>
+
       <p class="privacy-banner">
         <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="9.5" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></svg>
         <span>이 페이지는 공개 주소입니다. <strong>이름·전화번호·주소·계정 비밀번호</strong> 같은 개인정보는 올리지 마세요.</span>
@@ -111,10 +123,11 @@
               </select>
             </label>
           </div>
-          <label class="field">
+          <div class="field editor-shell" data-editor-shell="memo">
             <span class="sr-only">메모 내용</span>
-            <textarea id="memo-text" class="input textarea" rows="3" maxlength="2000" placeholder="업무 지시·요청·보고 내용을 적어 주세요. 파일만 첨부해도 등록됩니다."></textarea>
-          </label>
+            <div class="editor-toolbar" data-toolbar role="toolbar" aria-label="본문 서식"></div>
+            <div id="memo-text" class="input textarea editor" contenteditable="true" role="textbox" aria-multiline="true" aria-label="메모 내용" data-editor="memo" data-empty="true" data-placeholder="업무 지시·요청·보고 내용을 적어 주세요. 파일만 첨부해도 등록됩니다."></div>
+          </div>
 
           <!-- 파일 첨부 (이미지·문서·압축 파일) -->
           <div id="memo-attach" class="attach">
@@ -202,10 +215,11 @@
             <label class="check"><input id="notice-important" type="checkbox" /><span>중요 공지</span></label>
             <label class="check"><input id="notice-pinned" type="checkbox" /><span>상단 고정</span></label>
           </div>
-          <label class="field">
+          <div class="field editor-shell" data-editor-shell="notice">
             <span class="sr-only">공지 내용</span>
-            <textarea id="notice-text" class="input textarea" rows="4" maxlength="4000" placeholder="공지 내용을 적어 주세요."></textarea>
-          </label>
+            <div class="editor-toolbar" data-toolbar role="toolbar" aria-label="본문 서식"></div>
+            <div id="notice-text" class="input textarea editor" contenteditable="true" role="textbox" aria-multiline="true" aria-label="공지 내용" data-editor="notice" data-empty="true" data-placeholder="공지 내용을 적어 주세요."></div>
+          </div>
           <div class="composer-bottom">
             <span class="hint">제목과 내용을 적고 등록을 누르세요. Ctrl(⌘) + Enter 로도 등록됩니다.</span>
             <button id="notice-submit" class="btn primary" type="submit">등록</button>
@@ -258,6 +272,6 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
   <script src="firebase-config.js"></script>
-  <script src="app.js?v=20261128c"></script>
+  <script src="app.js?v=20261128d"></script>
 </body>
 </html>

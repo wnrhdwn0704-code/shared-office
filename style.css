@@ -1689,3 +1689,347 @@ select.input {
     animation: none !important;
   }
 }
+
+/* =========================================================================
+ * 서식 있는 글 · 이모지 반응 · 브라우저 알림 (2026-11-28)
+ * ========================================================================= */
+
+/* 서식 색은 라이트/다크에서 각각 읽기 좋은 값으로 바뀐다 (본문에는 var(--rt-*)로 저장) */
+:root {
+  --rt-red: #d92b2b;
+  --rt-blue: #1d4ed8;
+  --rt-green: #15803d;
+  --rt-orange: #c2410c;
+  --rt-highlight: #fde68a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --rt-red: #ff8f86;
+    --rt-blue: #8ab4ff;
+    --rt-green: #7ee2a8;
+    --rt-orange: #ffb86b;
+    --rt-highlight: #5c4a0a;
+  }
+}
+
+/* ---------- 서식 툴바 + 편집기 ---------- */
+.editor-shell {
+  gap: 0;
+}
+
+.editor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  background: var(--surface-2);
+}
+
+.editor-shell:focus-within .editor-toolbar {
+  border-color: var(--accent);
+}
+
+.fmt-btn {
+  min-width: 30px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.fmt-btn:hover,
+.fmt-btn:focus-visible {
+  border-color: var(--line);
+  background: var(--surface);
+  outline: none;
+}
+
+.fmt-btn b,
+.fmt-btn i,
+.fmt-btn u {
+  pointer-events: none;
+  font-size: 13px;
+}
+
+.fmt-btn.fmt-highlight {
+  background: var(--rt-highlight);
+  color: #3b2f00;
+  border-color: transparent;
+}
+
+.fmt-sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 3px;
+  background: var(--line);
+}
+
+.fmt-label {
+  margin: 0 2px 0 2px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.fmt-swatch {
+  width: 21px;
+  height: 21px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--swatch, var(--text));
+  cursor: pointer;
+}
+
+.fmt-swatch:hover,
+.fmt-swatch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.fmt-swatch.is-default {
+  background: linear-gradient(135deg, var(--surface) 0 48%, var(--text) 52% 100%);
+}
+
+.editor {
+  display: block;
+  min-height: 82px;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  outline: none;
+}
+
+.editor:focus {
+  border-top-color: var(--accent);
+}
+
+.editor[data-empty="true"]::before {
+  content: attr(data-placeholder);
+  color: var(--muted);
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+.memo-edit .editor,
+.notice-edit .editor {
+  min-height: 88px;
+}
+
+/* 서식 있는 본문 안의 색·형광펜은 테마 변수로 보인다 */
+.memo-text span[style*="color"],
+.notice-content span[style*="color"],
+.memo-edit span[style*="color"],
+.notice-edit span[style*="color"] {
+  /* 색은 인라인 style이 그대로 적용된다 */
+}
+
+/* ---------- 이모지 반응 ---------- */
+.reactions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.reactions-sm {
+  margin-top: 6px;
+  gap: 4px;
+}
+
+.reaction {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, transform 0.12s ease;
+}
+
+.reaction:hover {
+  border-color: var(--accent);
+}
+
+.reaction:active {
+  transform: scale(0.96);
+}
+
+.reaction.is-zero {
+  opacity: 0.5;
+}
+
+.reaction.is-zero .reaction-emoji {
+  filter: grayscale(1);
+}
+
+.reaction.is-on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  opacity: 1;
+}
+
+.reaction.is-on .reaction-emoji {
+  filter: none;
+}
+
+.reaction-emoji {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.reactions-sm .reaction {
+  height: 24px;
+  padding: 0 7px;
+  font-size: 11.5px;
+}
+
+.reactions-sm .reaction-emoji {
+  font-size: 12.5px;
+}
+
+.reaction-count {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 누가 눌렀는지 — 마우스를 올리거나 초점을 주면 이름이 뜬다 */
+.reaction[data-who]:hover::after,
+.reaction[data-who]:focus-visible::after {
+  content: attr(data-who);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  z-index: 20;
+  padding: 5px 9px;
+  transform: translateX(-50%);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  box-shadow: var(--shadow);
+  pointer-events: none;
+}
+
+/* ---------- 새 소식 배너 · 알림 토글 ---------- */
+.appbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.notify-toggle.is-on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.notify-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 13px;
+  cursor: pointer;
+  animation: notify-drop 0.18s ease;
+}
+
+.notify-banner[hidden] {
+  display: none;
+}
+
+.notify-banner-icon {
+  font-size: 17px;
+  line-height: 1;
+}
+
+.notify-banner-body {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.notify-banner-body strong {
+  font-size: 13px;
+}
+
+.notify-banner-body span {
+  color: var(--text);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notify-banner .icon-btn {
+  margin-left: auto;
+  color: inherit;
+}
+
+@keyframes notify-drop {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.memo.is-flash,
+.notice-item.is-flash {
+  animation: memo-flash 2.2s ease;
+}
+
+@keyframes memo-flash {
+  0%, 60% { box-shadow: 0 0 0 2px var(--accent); }
+  100% { box-shadow: 0 0 0 0 rgba(0, 0, 0, 0); }
+}
+
+@media (max-width: 480px) {
+  .appbar-actions {
+    gap: 5px;
+  }
+
+  .notify-toggle {
+    max-width: 40vw;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .fmt-label {
+    display: none;
+  }
+
+  .reaction {
+    height: 26px;
+    padding: 0 7px;
+  }
+}
