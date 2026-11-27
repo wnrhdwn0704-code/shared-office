@@ -3,7 +3,7 @@
  * GitHub Pages + Firebase Realtime Database
  *
  * 데이터 위치: /office/{ROOM_KEY}/
- *   memos, memoFiles, images, surveys, blogs
+ *   memos, memoFiles, images, notices
  */
 (() => {
   'use strict';
@@ -15,12 +15,6 @@
 
   const TAGS = ['지시', '요청', '보고', '메모'];
   const TAG_CLASS = { 지시: 'tag-order', 요청: 'tag-request', 보고: 'tag-report', 메모: 'tag-memo' };
-  const SURVEY_STATUS = ['진행전', '진행중', '완료'];
-  const BLOG_STATUS = ['기획', '작성중', '발행완료'];
-  const STATUS_CLASS = {
-    진행전: 'st-idle', 진행중: 'st-active', 완료: 'st-done',
-    기획: 'st-idle', 작성중: 'st-active', 발행완료: 'st-done'
-  };
 
   const MAX_IMAGE_SIDE = 1280;          // 긴 변 기준 리사이즈
   const JPEG_QUALITY = 0.85;            // 기본 압축 품질
@@ -47,15 +41,13 @@
     base: null,
     connected: false,
     tab: 'memos',
-    boardTab: 'survey',
     memos: {},
     images: {},
-    surveys: {},
-    blogs: {},
+    notices: {},
     imagesLoaded: false,
-    filters: { memo: 'all', survey: 'all', blog: 'all' },
-    editing: { memo: null, survey: null, blog: null },
-    drafts: { memo: '', survey: {}, blog: {} },
+    filters: { memo: 'all' },
+    editing: { memo: null, notice: null },
+    drafts: { memo: '', notice: {} },
     openReplies: new Set(),
     replyDrafts: {},
     pendingFiles: [],          // 등록 전에 고른 첨부 파일
@@ -328,30 +320,15 @@
     dom.imageList = $('#image-list');
     dom.imageEmpty = $('#image-empty');
 
-    dom.boardSurveyButton = $('#board-sub-survey');
-    dom.boardBlogButton = $('#board-sub-blog');
-    dom.boardSurvey = $('#board-survey');
-    dom.boardBlog = $('#board-blog');
-
-    dom.surveyForm = $('#survey-form');
-    dom.surveyTitle = $('#survey-title');
-    dom.surveyDeadline = $('#survey-deadline');
-    dom.surveyStatus = $('#survey-status');
-    dom.surveyAssignee = $('#survey-assignee');
-    dom.surveyNote = $('#survey-note');
-    dom.surveyFilter = $('#survey-filter');
-    dom.surveyList = $('#survey-list');
-    dom.surveyEmpty = $('#survey-empty');
-
-    dom.blogForm = $('#blog-form');
-    dom.blogTitle = $('#blog-title');
-    dom.blogPlatform = $('#blog-platform');
-    dom.blogStatus = $('#blog-status');
-    dom.blogAuthor = $('#blog-author');
-    dom.blogNote = $('#blog-note');
-    dom.blogFilter = $('#blog-filter');
-    dom.blogList = $('#blog-list');
-    dom.blogEmpty = $('#blog-empty');
+    dom.noticeForm = $('#notice-form');
+    dom.noticeTitle = $('#notice-title');
+    dom.noticeAuthor = $('#notice-author');
+    dom.noticeImportant = $('#notice-important');
+    dom.noticePinned = $('#notice-pinned');
+    dom.noticeText = $('#notice-text');
+    dom.noticeSubmit = $('#notice-submit');
+    dom.noticeList = $('#notice-list');
+    dom.noticeEmpty = $('#notice-empty');
 
     dom.aiContent = $('#ai-content');
 
@@ -416,32 +393,17 @@
     dom.imageList.addEventListener('click', onImageClick);
     bindDropzone();
 
-    dom.boardSurveyButton.addEventListener('click', () => selectBoard('survey'));
-    dom.boardBlogButton.addEventListener('click', () => selectBoard('blog'));
-
-    dom.surveyForm.addEventListener('submit', onAddSurvey);
-    dom.surveyList.addEventListener('click', onSurveyClick);
-    dom.surveyList.addEventListener('submit', onBoardEditSubmit);
-    dom.surveyList.addEventListener('input', onBoardDraftInput);
-    dom.surveyList.addEventListener('change', onBoardDraftInput);
-    dom.surveyFilter.addEventListener('click', (event) => {
-      const chip = event.target.closest('[data-filter]');
-      if (!chip) return;
-      state.filters.survey = chip.dataset.filter;
-      renderSurveys();
+    dom.noticeForm.addEventListener('submit', onAddNotice);
+    dom.noticeText.addEventListener('keydown', (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+        event.preventDefault();
+        dom.noticeForm.requestSubmit();
+      }
     });
-
-    dom.blogForm.addEventListener('submit', onAddBlog);
-    dom.blogList.addEventListener('click', onBlogClick);
-    dom.blogList.addEventListener('submit', onBoardEditSubmit);
-    dom.blogList.addEventListener('input', onBoardDraftInput);
-    dom.blogList.addEventListener('change', onBoardDraftInput);
-    dom.blogFilter.addEventListener('click', (event) => {
-      const chip = event.target.closest('[data-filter]');
-      if (!chip) return;
-      state.filters.blog = chip.dataset.filter;
-      renderBlogs();
-    });
+    dom.noticeList.addEventListener('click', onNoticeClick);
+    dom.noticeList.addEventListener('submit', onNoticeEditSubmit);
+    dom.noticeList.addEventListener('input', onNoticeDraftInput);
+    dom.noticeList.addEventListener('change', onNoticeDraftInput);
 
     dom.aiContent.addEventListener('click', onAiClick);
 
@@ -465,6 +427,7 @@
     const saved = localStorage.getItem(LS.author) || '';
     if (saved) {
       if (dom.memoAuthor && !dom.memoAuthor.value) dom.memoAuthor.value = saved;
+      if (dom.noticeAuthor && !dom.noticeAuthor.value) dom.noticeAuthor.value = saved;
       if (dom.imageAuthor && !dom.imageAuthor.value) dom.imageAuthor.value = saved;
     }
   }
@@ -491,7 +454,6 @@
     if (dom.app) dom.app.hidden = false;
     hydrateAuthorFields();
     renderAll();
-    selectBoard(state.boardTab);
     selectTab(state.tab);
   }
 
@@ -556,11 +518,10 @@
     state.roomKey = '';
     state.memos = {};
     state.images = {};
-    state.surveys = {};
-    state.blogs = {};
+    state.notices = {};
     state.imagesLoaded = false;
-    state.editing = { memo: null, survey: null, blog: null };
-    state.drafts = { memo: '', survey: {}, blog: {} };
+    state.editing = { memo: null, notice: null };
+    state.drafts = { memo: '', notice: {} };
     state.openReplies.clear();
     state.replyDrafts = {};
     state.attachPreviews = {};
@@ -641,13 +602,9 @@
       state.memos = snap.val() || {};
       renderMemos();
     });
-    listen(state.base.child('surveys'), 'value', (snap) => {
-      state.surveys = snap.val() || {};
-      renderSurveys();
-    });
-    listen(state.base.child('blogs'), 'value', (snap) => {
-      state.blogs = snap.val() || {};
-      renderBlogs();
+    listen(state.base.child('notices'), 'value', (snap) => {
+      state.notices = snap.val() || {};
+      renderNotices();
     });
 
     const imagesRef = state.base.child('images');
@@ -696,7 +653,7 @@
       tab.setAttribute('aria-selected', on ? 'true' : 'false');
       tab.tabIndex = on ? 0 : -1;
     });
-    ['memos', 'images', 'boards', 'ai'].forEach((key) => {
+    ['memos', 'images', 'notices', 'ai'].forEach((key) => {
       const panel = document.getElementById(`panel-${key}`);
       if (panel) panel.hidden = key !== name;
     });
@@ -712,26 +669,15 @@
     selectTab(dom.tabs[next].dataset.tab);
   }
 
-  function selectBoard(name) {
-    state.boardTab = name;
-    dom.boardSurvey.hidden = name !== 'survey';
-    dom.boardBlog.hidden = name !== 'blog';
-    dom.boardSurveyButton.classList.toggle('is-active', name === 'survey');
-    dom.boardBlogButton.classList.toggle('is-active', name === 'blog');
-    dom.boardSurveyButton.setAttribute('aria-selected', name === 'survey' ? 'true' : 'false');
-    dom.boardBlogButton.setAttribute('aria-selected', name === 'blog' ? 'true' : 'false');
-  }
-
   function renderAll() {
     renderMemos();
     renderImages();
-    renderSurveys();
-    renderBlogs();
+    renderNotices();
     renderAiPanel();
   }
 
   /* =========================================================
-   * 6. 공유 메모
+   * 6. 업무 공유
    * ========================================================= */
   async function onAddMemo(event) {
     event.preventDefault();
@@ -742,7 +688,7 @@
 
     if (!text && !pending.length) {
       dom.memoText.focus();
-      toast('메모 내용을 입력하거나 파일을 첨부해 주세요.');
+      toast('내용을 입력하거나 파일을 첨부해 주세요.');
       return;
     }
     const problem = validatePendingFiles();
@@ -775,7 +721,7 @@
       setAttachNote('');
       localStorage.setItem(LS.author, author);
       hydrateAuthorFields();
-      toast(attachments.length ? `메모와 파일 ${attachments.length}개를 등록했습니다.` : '메모를 등록했습니다.');
+      toast(attachments.length ? `업무 공유와 파일 ${attachments.length}개를 등록했습니다.` : '업무 공유에 등록했습니다.');
     } catch (err) {
       // 메모가 남지 않았으면 먼저 올린 파일도 함께 지운다.
       if (uploadedIds.length) await removeMemoFiles(uploadedIds);
@@ -834,7 +780,7 @@
   function validatePendingFiles() {
     if (!state.pendingFiles.length) return '';
     if (state.pendingFiles.length > MAX_ATTACH_COUNT) {
-      return `파일은 한 메모에 ${MAX_ATTACH_COUNT}개까지 첨부할 수 있습니다.`;
+      return `파일은 한 글에 ${MAX_ATTACH_COUNT}개까지 첨부할 수 있습니다.`;
     }
     const tooBig = state.pendingFiles.find((entry) => Number(entry.file.size) > MAX_FILE_BYTES);
     if (tooBig) {
@@ -842,7 +788,7 @@
     }
     const total = state.pendingFiles.reduce((sum, entry) => sum + (Number(entry.file.size) || 0), 0);
     if (total > MAX_ATTACH_TOTAL_BYTES) {
-      return `첨부 합계가 ${fmtBytes(total)}입니다. 한 메모에는 ${fmtBytes(MAX_ATTACH_TOTAL_BYTES)}까지 올릴 수 있어요.`;
+      return `첨부 합계가 ${fmtBytes(total)}입니다. 한 글에는 ${fmtBytes(MAX_ATTACH_TOTAL_BYTES)}까지 올릴 수 있어요.`;
     }
     return '';
   }
@@ -1202,8 +1148,8 @@
     dom.memoList.textContent = '';
     dom.memoEmpty.hidden = visible.length > 0;
     dom.memoEmpty.textContent = all.length
-      ? '이 필터에 해당하는 메모가 없습니다.'
-      : '아직 메모가 없습니다. 위에서 첫 메모를 남겨 보세요.';
+      ? '이 필터에 해당하는 글이 없습니다.'
+      : '아직 공유된 업무가 없습니다. 위에서 첫 글을 남겨 보세요.';
     visible.forEach((memo) => dom.memoList.append(memoCard(memo)));
 
     const openCount = all.filter((memo) => !memo.done).length;
@@ -1236,7 +1182,7 @@
               rows: 3,
               maxlength: 2000,
               'data-edit-text': memo.id,
-              'aria-label': '메모 내용 수정'
+              'aria-label': '글 내용 수정'
             }, state.drafts.memo),
             h('div', { class: 'memo-edit-actions' },
               h('button', { type: 'button', class: 'btn ghost small', 'data-action': 'cancel-edit' }, '취소'),
@@ -1384,7 +1330,7 @@
       state.editing.memo = null;
       state.drafts.memo = '';
       renderMemos();
-      toast('메모를 수정했습니다.');
+      toast('글을 수정했습니다.');
     } catch (err) {
       toast(`수정하지 못했습니다: ${err.message || err}`);
     }
@@ -1410,8 +1356,8 @@
   async function deleteMemo(id) {
     const files = memoAttachments(state.memos[id]);
     const message = files.length
-      ? `이 메모와 답글, 첨부 파일 ${files.length}개를 삭제할까요? 되돌릴 수 없습니다.`
-      : '이 메모와 답글을 삭제할까요? 되돌릴 수 없습니다.';
+      ? `이 글과 답글, 첨부 파일 ${files.length}개를 삭제할까요? 되돌릴 수 없습니다.`
+      : '이 글과 답글을 삭제할까요? 되돌릴 수 없습니다.';
     if (!window.confirm(message)) return;
     try {
       await childRef(`memos/${id}`).remove();
@@ -1419,7 +1365,7 @@
         await removeMemoFiles(files.map((file) => file.fileId));
         files.forEach((file) => { delete state.attachPreviews[file.fileId]; });
       }
-      toast('메모를 삭제했습니다.');
+      toast('글을 삭제했습니다.');
     } catch (err) {
       toast(`삭제하지 못했습니다: ${err.message || err}`);
     }
@@ -1683,394 +1629,251 @@
   }
 
   /* =========================================================
-   * 8. 보드 — 설문 현황
+   * 8. 공지
    * ========================================================= */
-  function renderBoardFilters(kind) {
-    const element = kind === 'survey' ? dom.surveyFilter : dom.blogFilter;
-    const data = kind === 'survey' ? state.surveys : state.blogs;
-    const statuses = kind === 'survey' ? SURVEY_STATUS : BLOG_STATUS;
-    const items = Object.values(data || {}).filter((item) => item && typeof item === 'object');
-    const active = state.filters[kind];
+  function noticeList() {
+    return Object.entries(state.notices || {})
+      .filter(([, item]) => item && typeof item === 'object')
+      .map(([id, item]) => ({ id, ...item }))
+      .sort((a, b) => {
+        // 상단 고정 공지가 먼저, 같은 순위에서는 최신순
+        const pinDiff = (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0);
+        if (pinDiff) return pinDiff;
+        return (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0);
+      });
+  }
 
-    element.textContent = '';
-    [{ key: 'all', label: '전체', count: items.length }]
-      .concat(statuses.map((status) => ({
-        key: status,
-        label: status,
-        count: items.filter((item) => item.status === status).length
-      })))
-      .forEach((option) => {
-        const on = active === option.key;
-        element.append(h('button', {
+  function renderNotices() {
+    if (!dom.noticeList) return;
+    const all = noticeList();
+    dom.noticeList.textContent = '';
+    dom.noticeEmpty.hidden = all.length > 0;
+    dom.noticeEmpty.textContent = '아직 등록된 공지가 없습니다. 위에서 첫 공지를 남겨 보세요.';
+    all.forEach((item) => dom.noticeList.append(noticeItem(item)));
+  }
+
+  function noticeItem(item) {
+    if (state.editing.notice === item.id) return noticeEditForm(item);
+
+    return h('article', { class: `notice-item${item.pinned ? ' is-pinned' : ''}`, 'data-id': item.id },
+      h('div', { class: 'notice-head' },
+        item.pinned ? h('span', { class: 'notice-badge pin' }, '상단 고정') : null,
+        item.important ? h('span', { class: 'notice-badge important' }, '중요') : null,
+        h('h3', { class: 'notice-title' }, item.title || '(제목 없음)')
+      ),
+      h('p', { class: 'notice-meta' },
+        h('span', {}, item.author || '이름 없음'),
+        h('span', {}, fmtStamp(item.createdAt)),
+        item.updatedAt && Number(item.updatedAt) !== Number(item.createdAt)
+          ? h('span', {}, `수정 ${fmtStamp(item.updatedAt)}`)
+          : null
+      ),
+      item.content ? h('p', { class: 'notice-content' }, item.content) : null,
+      h('div', { class: 'notice-actions' },
+        h('button', { type: 'button', class: 'text-btn', 'data-action': 'edit-notice', 'data-id': item.id }, '수정'),
+        h('button', {
           type: 'button',
-          class: `chip${on ? ' is-active' : ''}`,
-          'data-filter': option.key,
-          'aria-pressed': on ? 'true' : 'false'
-        }, option.label, h('span', { class: 'chip-count' }, String(option.count))));
-      });
-  }
-
-  function renderSurveys() {
-    if (!dom.surveyList) return;
-    renderBoardFilters('survey');
-    const all = Object.entries(state.surveys || {})
-      .filter(([, item]) => item && typeof item === 'object')
-      .map(([id, item]) => ({ id, ...item }))
-      .sort((a, b) => (a.deadline || '9999-12-31').localeCompare(b.deadline || '9999-12-31')
-        || (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0));
-
-    const filter = state.filters.survey;
-    const visible = all.filter((item) => filter === 'all' || item.status === filter);
-
-    dom.surveyList.textContent = '';
-    dom.surveyEmpty.hidden = visible.length > 0;
-    dom.surveyEmpty.textContent = all.length
-      ? '이 상태에 해당하는 설문이 없습니다.'
-      : '아직 등록된 설문이 없습니다. 위에서 추가해 보세요.';
-    visible.forEach((item) => dom.surveyList.append(surveyItem(item)));
-  }
-
-  function surveyItem(item) {
-    if (state.editing.survey === item.id) return surveyEditForm(item);
-    const dd = dday(item.deadline);
-
-    return h('article', { class: 'board-item', 'data-id': item.id },
-      h('div', { class: 'board-main' },
-        h('div', { class: 'board-title-row' },
-          h('span', { class: `status ${STATUS_CLASS[item.status] || 'st-idle'}` }, item.status || '진행전'),
-          h('h3', {}, item.title || '(제목 없음)')
-        ),
-        item.note ? h('p', { class: 'board-note' }, item.note) : null
-      ),
-      h('div', { class: 'board-side' },
-        item.deadline
-          ? h('span', { class: 'board-deadline' },
-              h('span', { class: `dday ${dd ? dd.cls : ''}` }, dd ? dd.label : ''),
-              fmtDate(item.deadline))
-          : null,
-        item.assignee ? h('span', { class: 'board-assignee' }, '담당 ', item.assignee) : null,
-        h('div', { class: 'row-actions' },
-          h('button', { type: 'button', class: 'text-btn', 'data-action': 'edit-survey', 'data-id': item.id }, '수정'),
-          h('button', { type: 'button', class: 'text-btn danger', 'data-action': 'delete-survey', 'data-id': item.id }, '삭제')
-        )
+          class: 'text-btn',
+          'data-action': 'toggle-pin',
+          'data-id': item.id
+        }, item.pinned ? '고정 해제' : '상단 고정'),
+        h('span', { class: 'spacer' }),
+        h('button', { type: 'button', class: 'text-btn danger', 'data-action': 'delete-notice', 'data-id': item.id }, '삭제')
       )
     );
   }
 
-  function surveyEditForm(item) {
-    const draft = state.drafts.survey[item.id] || {};
-    const value = (key) => (draft[key] !== undefined ? draft[key] : (item[key] || ''));
+  function noticeEditForm(item) {
+    const draft = state.drafts.notice[item.id] || {};
+    const value = (key) => (draft[key] !== undefined ? draft[key] : (item[key] !== undefined ? item[key] : ''));
+    const checked = (key) => (draft[key] !== undefined ? !!draft[key] : !!item[key]);
 
-    return h('form', { class: 'board-item board-edit', 'data-edit-survey': item.id },
+    return h('form', { class: 'notice-item notice-edit', 'data-edit-notice': item.id },
       h('div', { class: 'form-grid' },
         h('label', { class: 'field span-2' },
-          h('span', { class: 'field-label' }, '설문 제목'),
-          h('input', { class: 'input', 'data-field': 'title', maxlength: 80, value: value('title') })
-        ),
-        h('label', { class: 'field' },
-          h('span', { class: 'field-label' }, '마감일'),
-          h('input', { class: 'input', type: 'date', 'data-field': 'deadline', value: value('deadline') })
-        ),
-        h('label', { class: 'field' },
-          h('span', { class: 'field-label' }, '상태'),
-          statusSelect(value('status') || SURVEY_STATUS[0], SURVEY_STATUS, { 'data-field': 'status' })
-        ),
-        h('label', { class: 'field' },
-          h('span', { class: 'field-label' }, '담당'),
-          h('input', { class: 'input', 'data-field': 'assignee', maxlength: 20, value: value('assignee') })
-        ),
-        h('label', { class: 'field span-2' },
-          h('span', { class: 'field-label' }, '메모'),
-          h('input', { class: 'input', 'data-field': 'note', maxlength: 120, value: value('note') })
-        )
-      ),
-      h('div', { class: 'row-actions end' },
-        h('button', { type: 'button', class: 'btn ghost small', 'data-action': 'cancel-survey' }, '취소'),
-        h('button', { type: 'submit', class: 'btn primary small' }, '저장')
-      )
-    );
-  }
-
-  async function onAddSurvey(event) {
-    event.preventDefault();
-    const title = dom.surveyTitle.value.trim();
-    if (!title) {
-      toast('설문 제목을 입력해 주세요.');
-      dom.surveyTitle.focus();
-      return;
-    }
-    try {
-      await childRef('surveys').push({
-        title,
-        deadline: dom.surveyDeadline.value || '',
-        status: dom.surveyStatus.value,
-        assignee: dom.surveyAssignee.value.trim(),
-        note: dom.surveyNote.value.trim(),
-        updatedAt: Date.now()
-      });
-      dom.surveyTitle.value = '';
-      dom.surveyDeadline.value = '';
-      dom.surveyNote.value = '';
-      toast('설문 항목을 추가했습니다.');
-    } catch (err) {
-      toast(`추가하지 못했습니다: ${err.message || err}`);
-    }
-  }
-
-  function onSurveyClick(event) {
-    const button = event.target.closest('[data-action]');
-    if (!button) return;
-    const { action, id } = button.dataset;
-    if (action === 'edit-survey') startSurveyEdit(id);
-    else if (action === 'cancel-survey') cancelSurveyEdit();
-    else if (action === 'delete-survey') deleteSurvey(id);
-  }
-
-  function startSurveyEdit(id) {
-    if (!state.surveys[id]) return;
-    state.editing.survey = id;
-    state.drafts.survey[id] = {};
-    renderSurveys();
-    const form = dom.surveyList.querySelector(`[data-edit-survey="${id}"]`);
-    const input = form && form.querySelector('[data-field="title"]');
-    if (input) input.focus();
-  }
-
-  function cancelSurveyEdit() {
-    if (state.editing.survey) delete state.drafts.survey[state.editing.survey];
-    state.editing.survey = null;
-    renderSurveys();
-  }
-
-  async function saveSurvey(id) {
-    const item = state.surveys[id] || {};
-    const draft = state.drafts.survey[id] || {};
-    const next = {
-      title: String(draft.title !== undefined ? draft.title : item.title || '').trim(),
-      deadline: draft.deadline !== undefined ? draft.deadline : (item.deadline || ''),
-      status: draft.status !== undefined ? draft.status : (item.status || SURVEY_STATUS[0]),
-      assignee: String(draft.assignee !== undefined ? draft.assignee : item.assignee || '').trim(),
-      note: String(draft.note !== undefined ? draft.note : item.note || '').trim(),
-      updatedAt: Date.now()
-    };
-    if (!next.title) {
-      toast('제목을 입력해 주세요.');
-      return;
-    }
-    try {
-      await childRef(`surveys/${id}`).update(next);
-      delete state.drafts.survey[id];
-      state.editing.survey = null;
-      renderSurveys();
-      toast('설문 항목을 저장했습니다.');
-    } catch (err) {
-      toast(`저장하지 못했습니다: ${err.message || err}`);
-    }
-  }
-
-  async function deleteSurvey(id) {
-    if (!window.confirm('이 설문 항목을 삭제할까요?')) return;
-    try {
-      await childRef(`surveys/${id}`).remove();
-      toast('설문 항목을 삭제했습니다.');
-    } catch (err) {
-      toast(`삭제하지 못했습니다: ${err.message || err}`);
-    }
-  }
-
-  /* =========================================================
-   * 9. 보드 — 블로그
-   * ========================================================= */
-  function renderBlogs() {
-    if (!dom.blogList) return;
-    renderBoardFilters('blog');
-    const all = Object.entries(state.blogs || {})
-      .filter(([, item]) => item && typeof item === 'object')
-      .map(([id, item]) => ({ id, ...item }))
-      .sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0));
-
-    const filter = state.filters.blog;
-    const visible = all.filter((item) => filter === 'all' || item.status === filter);
-
-    dom.blogList.textContent = '';
-    dom.blogEmpty.hidden = visible.length > 0;
-    dom.blogEmpty.textContent = all.length
-      ? '이 상태에 해당하는 글이 없습니다.'
-      : '아직 등록된 글이 없습니다. 위에서 추가해 보세요.';
-    visible.forEach((item) => dom.blogList.append(blogItem(item)));
-  }
-
-  function blogItem(item) {
-    if (state.editing.blog === item.id) return blogEditForm(item);
-
-    return h('article', { class: 'board-item', 'data-id': item.id },
-      h('div', { class: 'board-main' },
-        h('div', { class: 'board-title-row' },
-          h('span', { class: `status ${STATUS_CLASS[item.status] || 'st-idle'}` }, item.status || '기획'),
-          h('h3', {}, item.title || '(제목 없음)')
-        ),
-        item.note ? h('p', { class: 'board-note' }, item.note) : null
-      ),
-      h('div', { class: 'board-side' },
-        item.platform ? h('span', { class: 'board-platform' }, item.platform) : null,
-        item.author ? h('span', {}, '작성 ', item.author) : null,
-        h('div', { class: 'row-actions' },
-          h('button', { type: 'button', class: 'text-btn', 'data-action': 'edit-blog', 'data-id': item.id }, '수정'),
-          h('button', { type: 'button', class: 'text-btn danger', 'data-action': 'delete-blog', 'data-id': item.id }, '삭제')
-        )
-      )
-    );
-  }
-
-  function blogEditForm(item) {
-    const draft = state.drafts.blog[item.id] || {};
-    const value = (key) => (draft[key] !== undefined ? draft[key] : (item[key] || ''));
-
-    return h('form', { class: 'board-item board-edit', 'data-edit-blog': item.id },
-      h('div', { class: 'form-grid' },
-        h('label', { class: 'field span-2' },
-          h('span', { class: 'field-label' }, '글 제목'),
-          h('input', { class: 'input', 'data-field': 'title', maxlength: 80, value: value('title') })
-        ),
-        h('label', { class: 'field' },
-          h('span', { class: 'field-label' }, '플랫폼'),
-          h('input', { class: 'input', 'data-field': 'platform', maxlength: 30, value: value('platform') })
-        ),
-        h('label', { class: 'field' },
-          h('span', { class: 'field-label' }, '상태'),
-          statusSelect(value('status') || BLOG_STATUS[0], BLOG_STATUS, { 'data-field': 'status' })
+          h('span', { class: 'field-label' }, '제목'),
+          h('input', { class: 'input', 'data-field': 'title', maxlength: 100, value: value('title') })
         ),
         h('label', { class: 'field' },
           h('span', { class: 'field-label' }, '작성자'),
           h('input', { class: 'input', 'data-field': 'author', maxlength: 20, value: value('author') })
         ),
+        h('div', { class: 'field notice-edit-flags' },
+          h('label', { class: 'check' },
+            h('input', { type: 'checkbox', 'data-field': 'important', checked: checked('important') }),
+            h('span', {}, '중요 공지')
+          ),
+          h('label', { class: 'check' },
+            h('input', { type: 'checkbox', 'data-field': 'pinned', checked: checked('pinned') }),
+            h('span', {}, '상단 고정')
+          )
+        ),
         h('label', { class: 'field span-2' },
-          h('span', { class: 'field-label' }, '메모'),
-          h('input', { class: 'input', 'data-field': 'note', maxlength: 120, value: value('note') })
+          h('span', { class: 'field-label' }, '내용'),
+          h('textarea', { class: 'input textarea', rows: 5, maxlength: 4000, 'data-field': 'content' }, value('content'))
         )
       ),
       h('div', { class: 'row-actions end' },
-        h('button', { type: 'button', class: 'btn ghost small', 'data-action': 'cancel-blog' }, '취소'),
+        h('button', { type: 'button', class: 'btn ghost small', 'data-action': 'cancel-notice' }, '취소'),
         h('button', { type: 'submit', class: 'btn primary small' }, '저장')
       )
     );
   }
 
-  function statusSelect(current, statuses, extraAttrs) {
-    return h('select', Object.assign({ class: 'input' }, extraAttrs || {}),
-      statuses.map((status) => h('option', { value: status, selected: status === current }, status)));
-  }
-
-  async function onAddBlog(event) {
+  async function onAddNotice(event) {
     event.preventDefault();
-    const title = dom.blogTitle.value.trim();
+    const title = dom.noticeTitle.value.trim();
+    const content = dom.noticeText.value.trim();
+    const author = dom.noticeAuthor.value.trim() || '이름 없음';
+
     if (!title) {
-      toast('글 제목을 입력해 주세요.');
-      dom.blogTitle.focus();
+      dom.noticeTitle.focus();
+      toast('공지 제목을 입력해 주세요.');
       return;
     }
+    if (!content) {
+      dom.noticeText.focus();
+      toast('공지 내용을 입력해 주세요.');
+      return;
+    }
+
+    const now = Date.now();
+    setNoticeBusy(true);
     try {
-      await childRef('blogs').push({
+      await childRef('notices').push({
         title,
-        platform: dom.blogPlatform.value.trim(),
-        status: dom.blogStatus.value,
-        author: dom.blogAuthor.value.trim(),
-        note: dom.blogNote.value.trim(),
-        updatedAt: Date.now()
+        author,
+        content,
+        important: !!dom.noticeImportant.checked,
+        pinned: !!dom.noticePinned.checked,
+        createdAt: now,
+        updatedAt: now
       });
-      dom.blogTitle.value = '';
-      dom.blogPlatform.value = '';
-      dom.blogNote.value = '';
-      toast('블로그 항목을 추가했습니다.');
+      dom.noticeTitle.value = '';
+      dom.noticeText.value = '';
+      dom.noticeImportant.checked = false;
+      dom.noticePinned.checked = false;
+      localStorage.setItem(LS.author, author);
+      hydrateAuthorFields();
+      toast('공지를 등록했습니다.');
     } catch (err) {
-      toast(`추가하지 못했습니다: ${err.message || err}`);
+      toast(`등록하지 못했습니다: ${err.message || err}`);
+    } finally {
+      setNoticeBusy(false);
     }
   }
 
-  function onBlogClick(event) {
+  function setNoticeBusy(busy) {
+    if (!dom.noticeSubmit) return;
+    dom.noticeSubmit.disabled = busy;
+    dom.noticeSubmit.textContent = busy ? '등록 중…' : '등록';
+  }
+
+  function onNoticeClick(event) {
     const button = event.target.closest('[data-action]');
     if (!button) return;
     const { action, id } = button.dataset;
-    if (action === 'edit-blog') startBlogEdit(id);
-    else if (action === 'cancel-blog') cancelBlogEdit();
-    else if (action === 'delete-blog') deleteBlog(id);
+    if (action === 'edit-notice') startNoticeEdit(id);
+    else if (action === 'cancel-notice') cancelNoticeEdit();
+    else if (action === 'toggle-pin') toggleNoticePin(id);
+    else if (action === 'delete-notice') deleteNotice(id);
   }
 
-  function startBlogEdit(id) {
-    if (!state.blogs[id]) return;
-    state.editing.blog = id;
-    state.drafts.blog[id] = {};
-    renderBlogs();
-    const form = dom.blogList.querySelector(`[data-edit-blog="${id}"]`);
+  function startNoticeEdit(id) {
+    if (!state.notices[id]) return;
+    state.editing.notice = id;
+    state.drafts.notice[id] = {};
+    renderNotices();
+    const form = dom.noticeList.querySelector(`[data-edit-notice="${id}"]`);
     const input = form && form.querySelector('[data-field="title"]');
     if (input) input.focus();
   }
 
-  function cancelBlogEdit() {
-    if (state.editing.blog) delete state.drafts.blog[state.editing.blog];
-    state.editing.blog = null;
-    renderBlogs();
+  function cancelNoticeEdit() {
+    if (state.editing.notice) delete state.drafts.notice[state.editing.notice];
+    state.editing.notice = null;
+    renderNotices();
   }
 
-  async function saveBlog(id) {
-    const item = state.blogs[id] || {};
-    const draft = state.drafts.blog[id] || {};
+  async function saveNotice(id) {
+    const item = state.notices[id] || {};
+    const draft = state.drafts.notice[id] || {};
+    const pick = (key) => (draft[key] !== undefined ? draft[key] : item[key]);
     const next = {
-      title: String(draft.title !== undefined ? draft.title : item.title || '').trim(),
-      platform: String(draft.platform !== undefined ? draft.platform : item.platform || '').trim(),
-      status: draft.status !== undefined ? draft.status : (item.status || BLOG_STATUS[0]),
-      author: String(draft.author !== undefined ? draft.author : item.author || '').trim(),
-      note: String(draft.note !== undefined ? draft.note : item.note || '').trim(),
+      title: String(pick('title') || '').trim(),
+      author: String(pick('author') || '').trim(),
+      content: String(pick('content') || '').trim(),
+      important: !!pick('important'),
+      pinned: !!pick('pinned'),
       updatedAt: Date.now()
     };
     if (!next.title) {
       toast('제목을 입력해 주세요.');
       return;
     }
+    if (!next.content) {
+      toast('내용을 입력해 주세요.');
+      return;
+    }
     try {
-      await childRef(`blogs/${id}`).update(next);
-      delete state.drafts.blog[id];
-      state.editing.blog = null;
-      renderBlogs();
-      toast('블로그 항목을 저장했습니다.');
+      await childRef(`notices/${id}`).update(next);
+      delete state.drafts.notice[id];
+      state.editing.notice = null;
+      renderNotices();
+      toast('공지를 수정했습니다.');
     } catch (err) {
       toast(`저장하지 못했습니다: ${err.message || err}`);
     }
   }
 
-  async function deleteBlog(id) {
-    if (!window.confirm('이 블로그 항목을 삭제할까요?')) return;
+  async function toggleNoticePin(id) {
+    const item = state.notices[id];
+    if (!item || typeof item !== 'object') return;
+    const pinned = !item.pinned;
     try {
-      await childRef(`blogs/${id}`).remove();
-      toast('블로그 항목을 삭제했습니다.');
+      await childRef(`notices/${id}`).update({ pinned, updatedAt: Date.now() });
+      toast(pinned ? '공지를 상단에 고정했습니다.' : '상단 고정을 해제했습니다.');
+    } catch (err) {
+      toast(`저장하지 못했습니다: ${err.message || err}`);
+      renderNotices();
+    }
+  }
+
+  async function deleteNotice(id) {
+    if (!window.confirm('이 공지를 삭제할까요? 되돌릴 수 없습니다.')) return;
+    try {
+      await childRef(`notices/${id}`).remove();
+      if (state.editing.notice === id) {
+        delete state.drafts.notice[id];
+        state.editing.notice = null;
+      }
+      toast('공지를 삭제했습니다.');
     } catch (err) {
       toast(`삭제하지 못했습니다: ${err.message || err}`);
     }
   }
 
-  function onBoardDraftInput(event) {
-    const form = event.target.closest('[data-edit-survey], [data-edit-blog]');
+  function onNoticeDraftInput(event) {
+    const form = event.target.closest('[data-edit-notice]');
     if (!form) return;
     const field = event.target.getAttribute('data-field');
-    if (!field) return;
-    const isSurvey = form.hasAttribute('data-edit-survey');
-    const id = form.getAttribute(isSurvey ? 'data-edit-survey' : 'data-edit-blog');
-    const store = isSurvey ? state.drafts.survey : state.drafts.blog;
-    store[id] = store[id] || {};
-    store[id][field] = event.target.value;
+    if (!field || !event.target.matches('input, textarea')) return;
+    const id = form.getAttribute('data-edit-notice');
+    state.drafts.notice[id] = state.drafts.notice[id] || {};
+    state.drafts.notice[id][field] = event.target.type === 'checkbox'
+      ? event.target.checked
+      : event.target.value;
   }
 
-  function onBoardEditSubmit(event) {
-    const survey = event.target.closest('[data-edit-survey]');
-    const blog = event.target.closest('[data-edit-blog]');
-    if (!survey && !blog) return;
+  function onNoticeEditSubmit(event) {
+    const form = event.target.closest('[data-edit-notice]');
+    if (!form) return;
     event.preventDefault();
-    if (survey) saveSurvey(survey.getAttribute('data-edit-survey'));
-    else saveBlog(blog.getAttribute('data-edit-blog'));
+    saveNotice(form.getAttribute('data-edit-notice'));
   }
 
   /* =========================================================
-   * 10. AI 연동
+   * 9. AI 연동
    * ========================================================= */
   function renderAiPanel() {
     const root = dom.aiContent;
@@ -2088,7 +1891,7 @@
 
     root.append(h('section', { class: 'card ai-card' },
       h('h2', {}, '연결 정보'),
-      h('p', { class: 'muted' }, '아래 주소와 방 키를 다른 AI나 스크립트에 알려 주면, 같은 비서실의 메모·이미지·설문·블로그를 REST API로 읽고 쓸 수 있습니다.'),
+      h('p', { class: 'muted' }, '아래 주소와 방 키를 다른 AI나 스크립트에 알려 주면, 같은 비서실의 업무 공유·공지·이미지를 REST API로 읽고 쓸 수 있습니다.'),
       kvRow('Firebase 주소', dbUrl, 'Firebase 주소를'),
       kvRow('프로젝트 ID', projectId, '프로젝트 ID를'),
       h('div', { class: 'kv' },
@@ -2103,13 +1906,13 @@
     ));
 
     root.append(codeCard(
-      '메모 읽기·쓰기 (curl)',
-      'GET으로 읽고, POST로 새 메모를 넣고, PATCH로 완료 상태만 바꿉니다.',
+      '업무 공유 읽기·쓰기 (curl)',
+      'GET으로 읽고, POST로 새 글을 넣고, PATCH로 완료 상태만 바꿉니다.',
       [
-        `# 1) 메모 전체 조회 (GET)`,
+        `# 1) 업무 공유 전체 조회 (GET)`,
         `curl "${base}/memos.json"`,
         ``,
-        `# 2) 메모 등록 (POST)`,
+        `# 2) 업무 공유 등록 (POST)`,
         `curl -X POST -H "Content-Type: application/json" \\`,
         `  -d '{"author":"AI비서","tag":"보고","text":"보고 내용","done":false,"createdAt":1795768800000}' \\`,
         `  "${base}/memos.json"`,
@@ -2117,46 +1920,48 @@
         `# 3) 완료 처리 (PATCH — 일부 값만 수정)`,
         `curl -X PATCH -H "Content-Type: application/json" \\`,
         `  -d '{"done":true,"updatedAt":1795768800000}' \\`,
-        `  "${base}/memos/{메모ID}.json"`,
+        `  "${base}/memos/{글ID}.json"`,
         ``,
         `# 4) 답글 등록 (POST)`,
         `curl -X POST -H "Content-Type: application/json" \\`,
         `  -d '{"author":"AI비서","text":"답글 내용","createdAt":1795768800000}' \\`,
-        `  "${base}/memos/{메모ID}/replies.json"`,
+        `  "${base}/memos/{글ID}/replies.json"`,
         ``,
         `# 5) 삭제 (DELETE)`,
-        `curl -X DELETE "${base}/memos/{메모ID}.json"`
+        `curl -X DELETE "${base}/memos/{글ID}.json"`
       ].join('\n')
     ));
 
     root.append(codeCard(
-      '이미지·설문·블로그',
-      '같은 규칙으로 각 노드에 접근합니다. 이미지는 dataUrl(JPEG) 문자열로 저장됩니다.',
+      '공지 (curl)',
+      '상단 고정(pinned)과 중요 표시(important)를 함께 저장합니다. 목록은 상단 고정이 먼저, 나머지는 최신순입니다.',
       [
-        `# 이미지 목록`,
-        `curl "${base}/images.json"`,
+        `# 공지 전체 조회 (GET)`,
+        `curl "${base}/notices.json"`,
         ``,
-        `# 설문 현황 / 블로그 보드`,
-        `curl "${base}/surveys.json"`,
-        `curl "${base}/blogs.json"`,
-        ``,
-        `# 설문 추가 (POST)`,
+        `# 공지 등록 (POST)`,
         `curl -X POST -H "Content-Type: application/json" \\`,
-        `  -d '{"title":"12월 만족도 조사","deadline":"2026-12-10","status":"진행중","assignee":"담당자","note":"","updatedAt":1795768800000}' \\`,
-        `  "${base}/surveys.json"`,
+        `  -d '{"title":"12월 업무 일정 안내","author":"AI비서","content":"공지 내용","important":false,"pinned":true,"createdAt":1795768800000,"updatedAt":1795768800000}' \\`,
+        `  "${base}/notices.json"`,
         ``,
-        `# 상태만 수정 (PATCH)`,
+        `# 상단 고정 해제 (PATCH — 일부 값만 수정)`,
         `curl -X PATCH -H "Content-Type: application/json" \\`,
-        `  -d '{"status":"완료","updatedAt":1795768800000}' \\`,
-        `  "${base}/surveys/{설문ID}.json"`
+        `  -d '{"pinned":false,"updatedAt":1795768800000}' \\`,
+        `  "${base}/notices/{공지ID}.json"`,
+        ``,
+        `# 공지 삭제 (DELETE)`,
+        `curl -X DELETE "${base}/notices/{공지ID}.json"`,
+        ``,
+        `# 이미지 목록`,
+        `curl "${base}/images.json"`
       ].join('\n')
     ));
 
     root.append(codeCard(
-      '메모 첨부 파일 (memoFiles)',
-      '첨부 파일 본문은 메모와 분리해 memoFiles에 둡니다. 메모에는 이름·형식·용량만 남아 목록과 정기 확인이 가볍습니다. 5MB를 넘는 파일은 512K자씩 chunks로 나뉘어 저장됩니다.',
+      '업무 공유 첨부 파일 (memoFiles)',
+      '첨부 파일 본문은 글과 분리해 memoFiles에 둡니다. 글에는 이름·형식·용량만 남아 목록과 정기 확인이 가볍습니다. 5MB를 넘는 파일은 512K자씩 chunks로 나뉘어 저장됩니다.',
       [
-        `# 메모에는 첨부 메타데이터만 들어갑니다`,
+        `# 글에는 첨부 메타데이터만 들어갑니다`,
         `curl "${base}/memos.json"`,
         `# → { "text": "...", "attachments": [{ "fileId": "-N...", "name": "보고서.hwp", "type": "application/x-hwp", "size": 234567 }] }`,
         ``,
@@ -2168,7 +1973,7 @@
         `  -d '{"name":"메모.txt","type":"text/plain","size":12,"dataUrl":"data:text/plain;base64,...","createdAt":1795768800000}' \\`,
         `  "${base}/memoFiles/{fileId}.json"`,
         ``,
-        `# 메모 삭제 시 첨부도 함께 정리`,
+        `# 글 삭제 시 첨부도 함께 정리`,
         `curl -X DELETE "${base}/memoFiles/{fileId}.json"`
       ].join('\n')
     ));
@@ -2179,11 +1984,11 @@
       [
         `const BASE = "${base}";`,
         ``,
-        `// 메모 읽기`,
+        `// 업무 공유 읽기`,
         'const res = await fetch(`${BASE}/memos.json`);',
         'const memos = await res.json();',
         '',
-        '// 메모 등록',
+        '// 업무 공유 등록',
         'await fetch(`${BASE}/memos.json`, {',
         '  method: "POST",',
         '  headers: { "Content-Type": "application/json" },',
@@ -2201,10 +2006,10 @@
 
     root.append(h('section', { class: 'card ai-card' },
       h('h3', {}, '정기 확인 (check.sh) 팁'),
-      h('p', { class: 'muted' }, '정해진 시간에 아래 스크립트를 돌려, 완료되지 않은 메모가 있을 때만 AI를 깨우면 활동량을 아낄 수 있습니다.'),
+      h('p', { class: 'muted' }, '정해진 시간에 아래 스크립트를 돌려, 완료되지 않은 업무 공유 글이 있을 때만 AI를 깨우면 활동량을 아낄 수 있습니다.'),
       codeBlock([
         '#!/bin/sh',
-        '# 완료되지 않은 메모가 있으면 exit 0 (AI를 깨움)',
+        '# 완료되지 않은 업무 공유 글이 있으면 exit 0 (AI를 깨움)',
         'BASE="' + base + '"',
         'json=$(curl -fsS "$BASE/memos.json?print=pretty") || exit 1',
         'printf "%s" "$json" | grep -q \'"done": false\' && exit 0',
@@ -2232,7 +2037,7 @@
     root.append(h('section', { class: 'card ai-card ai-warn' },
       h('h3', {}, '주의해서 다뤄 주세요'),
       h('p', {}, '· ROOM_KEY는 비밀번호를 해시한 값으로, 사실상 이 방의 열쇠입니다. 공개 게시물이나 남에게 그대로 알려 주지 마세요.'),
-      h('p', {}, '· 이 저장소는 공개(Public)입니다. 이름·전화번호·주소·계정 비밀번호 같은 개인정보는 메모나 이미지로 올리지 마세요.'),
+      h('p', {}, '· 이 저장소는 공개(Public)입니다. 이름·전화번호·주소·계정 비밀번호 같은 개인정보는 업무 공유 글이나 이미지로 올리지 마세요.'),
       h('p', {}, '· REST API에는 별도 로그인이 없습니다. 주소를 아는 사람은 규칙이 허용하는 범위에서 읽고 쓸 수 있습니다.')
     ));
   }

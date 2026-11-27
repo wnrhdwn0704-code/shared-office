@@ -69,16 +69,16 @@
       <nav class="tabbar" role="tablist" aria-label="비서실 메뉴">
         <button type="button" class="tab is-active" role="tab" id="tab-memos" data-tab="memos" aria-selected="true" aria-controls="panel-memos">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.5h10a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2Z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg>
-          <span>공유 메모</span>
+          <span>업무 공유</span>
           <em id="memo-badge" class="badge" hidden></em>
         </button>
         <button type="button" class="tab" role="tab" id="tab-images" data-tab="images" aria-selected="false" aria-controls="panel-images" tabindex="-1">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="m5.2 17.2 4.3-4.6L13 16l2.2-2.3 3.6 3.8"/></svg>
           <span>이미지</span>
         </button>
-        <button type="button" class="tab" role="tab" id="tab-boards" data-tab="boards" aria-selected="false" aria-controls="panel-boards" tabindex="-1">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4.5" y="4.5" width="15" height="15" rx="2.5"/><path d="M9 4.5h6v3.2H9z"/><path d="M8.5 12h7M8.5 15.5h4.5"/></svg>
-          <span>보드</span>
+        <button type="button" class="tab" role="tab" id="tab-notices" data-tab="notices" aria-selected="false" aria-controls="panel-notices" tabindex="-1">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10.4v3.2a1.6 1.6 0 0 0 1.6 1.6H7l4.6 3.4V5.4L7 8.8H5.6A1.6 1.6 0 0 0 4 10.4Z"/><path d="M15.4 9.1a4.2 4.2 0 0 1 0 5.8M18 6.6a8 8 0 0 1 0 10.8"/></svg>
+          <span>공지</span>
         </button>
         <button type="button" class="tab" role="tab" id="tab-ai" data-tab="ai" aria-selected="false" aria-controls="panel-ai" tabindex="-1">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.2v2.6M12 18.2v2.6M4.4 7.6l2.2 1.3M17.4 15.1l2.2 1.3M4.4 16.4l2.2-1.3M17.4 8.9l2.2-1.3"/><circle cx="12" cy="12" r="3.2"/></svg>
@@ -93,7 +93,7 @@
         <span>이 페이지는 공개 주소입니다. <strong>이름·전화번호·주소·계정 비밀번호</strong> 같은 개인정보는 올리지 마세요.</span>
       </p>
 
-      <!-- ---------- 공유 메모 ---------- -->
+      <!-- ---------- 업무 공유 ---------- -->
       <section id="panel-memos" class="panel" role="tabpanel" aria-labelledby="tab-memos">
         <form id="memo-form" class="card composer" autocomplete="off">
           <div class="composer-top">
@@ -113,7 +113,7 @@
           </div>
           <label class="field">
             <span class="sr-only">메모 내용</span>
-            <textarea id="memo-text" class="input textarea" rows="3" maxlength="2000" placeholder="지시·요청·보고 내용을 적어 주세요. 파일만 첨부해도 등록됩니다."></textarea>
+            <textarea id="memo-text" class="input textarea" rows="3" maxlength="2000" placeholder="업무 지시·요청·보고 내용을 적어 주세요. 파일만 첨부해도 등록됩니다."></textarea>
           </label>
 
           <!-- 파일 첨부 (이미지·문서·압축 파일) -->
@@ -137,8 +137,8 @@
         </form>
 
         <div class="list-head">
-          <h2>공유 메모</h2>
-          <div id="memo-filter" class="chips" role="group" aria-label="메모 필터"></div>
+          <h2>업무 공유</h2>
+          <div id="memo-filter" class="chips" role="group" aria-label="업무 공유 필터"></div>
         </div>
 
         <div id="memo-list" class="memo-list"></div>
@@ -185,103 +185,40 @@
         <p id="image-empty" class="empty" hidden></p>
       </section>
 
-      <!-- ---------- 보드 (설문 / 블로그) ---------- -->
-      <section id="panel-boards" class="panel" role="tabpanel" aria-labelledby="tab-boards" hidden>
-        <div class="segmented" role="tablist" aria-label="보드 종류">
-          <button id="board-sub-survey" type="button" class="segment is-active" role="tab" aria-selected="true" aria-controls="board-survey">설문 현황</button>
-          <button id="board-sub-blog" type="button" class="segment" role="tab" aria-selected="false" aria-controls="board-blog">블로그 보드</button>
-        </div>
-
-        <div id="board-survey" class="board" role="tabpanel" aria-labelledby="board-sub-survey">
-          <form id="survey-form" class="card composer" autocomplete="off">
-            <div class="form-grid">
-              <label class="field span-2">
-                <span class="field-label">설문 제목 *</span>
-                <input id="survey-title" class="input" type="text" maxlength="80" placeholder="예: 12월 콘텐츠 만족도 조사" />
-              </label>
-              <label class="field">
-                <span class="field-label">마감일</span>
-                <input id="survey-deadline" class="input" type="date" />
-              </label>
-              <label class="field">
-                <span class="field-label">상태</span>
-                <select id="survey-status" class="input">
-                  <option value="진행전">진행전</option>
-                  <option value="진행중" selected>진행중</option>
-                  <option value="완료">완료</option>
-                </select>
-              </label>
-              <label class="field span-2">
-                <span class="field-label">담당</span>
-                <input id="survey-assignee" class="input" type="text" maxlength="20" placeholder="담당자" />
-              </label>
-              <label class="field span-2">
-                <span class="field-label">메모</span>
-                <input id="survey-note" class="input" type="text" maxlength="120" placeholder="참고 사항" />
-              </label>
-            </div>
-            <div class="composer-bottom">
-              <span class="hint">제목은 필수입니다.</span>
-              <button class="btn primary" type="submit">추가</button>
-            </div>
-          </form>
-
-          <div class="list-head">
-            <h2>설문 현황</h2>
-            <div id="survey-filter" class="chips" role="group" aria-label="설문 상태 필터"></div>
+      <!-- ---------- 공지 ---------- -->
+      <section id="panel-notices" class="panel" role="tabpanel" aria-labelledby="tab-notices" hidden>
+        <form id="notice-form" class="card composer" autocomplete="off">
+          <div class="composer-top">
+            <label class="field">
+              <span class="field-label">제목 *</span>
+              <input id="notice-title" class="input" type="text" maxlength="100" placeholder="예: 12월 1주차 업무 일정 안내" />
+            </label>
+            <label class="field">
+              <span class="field-label">작성자</span>
+              <input id="notice-author" class="input" type="text" maxlength="20" placeholder="이름 또는 이니셜" />
+            </label>
           </div>
-          <div id="survey-list" class="board-list"></div>
-          <p id="survey-empty" class="empty" hidden></p>
-        </div>
-
-        <div id="board-blog" class="board" role="tabpanel" aria-labelledby="board-sub-blog" hidden>
-          <form id="blog-form" class="card composer" autocomplete="off">
-            <div class="form-grid">
-              <label class="field span-2">
-                <span class="field-label">글 제목 *</span>
-                <input id="blog-title" class="input" type="text" maxlength="80" placeholder="예: 12월 1주차 기획기사" />
-              </label>
-              <label class="field">
-                <span class="field-label">플랫폼</span>
-                <input id="blog-platform" class="input" type="text" maxlength="30" placeholder="예: 네이버 블로그" list="platform-list" />
-                <datalist id="platform-list">
-                  <option value="네이버 블로그"></option>
-                  <option value="티스토리"></option>
-                  <option value="브런치"></option>
-                  <option value="인스타그램"></option>
-                  <option value="유튜브"></option>
-                </datalist>
-              </label>
-              <label class="field">
-                <span class="field-label">상태</span>
-                <select id="blog-status" class="input">
-                  <option value="기획">기획</option>
-                  <option value="작성중" selected>작성중</option>
-                  <option value="발행완료">발행완료</option>
-                </select>
-              </label>
-              <label class="field span-2">
-                <span class="field-label">작성자</span>
-                <input id="blog-author" class="input" type="text" maxlength="20" placeholder="작성자" />
-              </label>
-              <label class="field span-2">
-                <span class="field-label">메모</span>
-                <input id="blog-note" class="input" type="text" maxlength="120" placeholder="참고 사항" />
-              </label>
-            </div>
-            <div class="composer-bottom">
-              <span class="hint">제목은 필수입니다.</span>
-              <button class="btn primary" type="submit">추가</button>
-            </div>
-          </form>
-
-          <div class="list-head">
-            <h2>블로그 보드</h2>
-            <div id="blog-filter" class="chips" role="group" aria-label="블로그 상태 필터"></div>
+          <div class="notice-flags">
+            <label class="check"><input id="notice-important" type="checkbox" /><span>중요 공지</span></label>
+            <label class="check"><input id="notice-pinned" type="checkbox" /><span>상단 고정</span></label>
           </div>
-          <div id="blog-list" class="board-list"></div>
-          <p id="blog-empty" class="empty" hidden></p>
+          <label class="field">
+            <span class="sr-only">공지 내용</span>
+            <textarea id="notice-text" class="input textarea" rows="4" maxlength="4000" placeholder="공지 내용을 적어 주세요."></textarea>
+          </label>
+          <div class="composer-bottom">
+            <span class="hint">제목과 내용을 적고 등록을 누르세요. Ctrl(⌘) + Enter 로도 등록됩니다.</span>
+            <button id="notice-submit" class="btn primary" type="submit">등록</button>
+          </div>
+        </form>
+
+        <div class="list-head">
+          <h2>공지사항</h2>
+          <span class="hint">상단 고정 공지가 먼저, 나머지는 최신순으로 보입니다.</span>
         </div>
+
+        <div id="notice-list" class="notice-list"></div>
+        <p id="notice-empty" class="empty" hidden></p>
       </section>
 
       <!-- ---------- AI 연동 ---------- -->

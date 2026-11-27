@@ -1,6 +1,6 @@
 # 합동 비서실 (Shared Office)
 
-지시·요청·보고를 주고받고, 이미지와 설문·블로그 진행 상황을 한곳에서 보는 **정적 웹앱**입니다.
+지시·요청·보고를 주고받고, 공지와 이미지를 한곳에서 보는 **정적 웹앱**입니다.
 서버 없이 **GitHub Pages**(화면) + **Firebase Realtime Database**(저장소)만으로 동작하며, 무료 요금제(Spark)로 충분합니다.
 
 곽도형 님 측이 전해 준 구축 가이드의 구조를 그대로 따랐습니다.
@@ -123,9 +123,9 @@ Realtime Database → **규칙** 탭에서 아래 내용을 붙여넣고 **게�
 
 | 탭 | 하는 일 |
 |---|---|
-| **공유 메모** | 작성자·태그(지시/요청/보고/메모)를 골라 등록. **이미지·문서(HWP·PDF·XLSX·PPTX·DOCX)·압축 파일**을 첨부할 수 있고(끌어다 놓기·Ctrl+V 붙여넣기), 카드에서 썸네일로 보거나 다운로드합니다. 카드에서 바로 **수정**(인라인), **완료** 체크, **답글**, **삭제**. 필터: 전체/미완료/태그별 |
+| **업무 공유** | 작성자·태그(지시/요청/보고/메모)를 골라 등록. **이미지·문서(HWP·PDF·XLSX·PPTX·DOCX)·압축 파일**을 첨부할 수 있고(끌어다 놓기·Ctrl+V 붙여넣기), 카드에서 썸네일로 보거나 다운로드합니다. 카드에서 바로 **수정**(인라인), **완료** 체크, **답글**, **삭제**. 필터: 전체/미완료/태그별 |
 | **이미지** | 여러 장을 한 번에 끌어다 놓거나 선택. 긴 변 1280px·JPEG로 자동 경량화해 저장. 클릭하면 크게 보기 + 다운로드 |
-| **보드** | **설문 현황**(진행전/진행중/완료)과 **블로그 보드**(기획/작성중/발행완료)를 전환하며, 상태별 필터·추가·수정·삭제. 마감일은 D-day로 표시 |
+| **공지** | 제목·작성자·내용을 적고 **중요 공지**·**상단 고정**을 체크해 등록. 목록은 **상단 고정 공지가 먼저, 나머지는 최신순**이며 중요 배지가 표시됩니다. 카드에서 **수정**(인라인), **상단 고정 토글**, **삭제** |
 | **AI 연동** | 지금 연결된 `databaseURL`과 `ROOM_KEY` 기준 **REST API 예시**가 자동으로 표시됩니다. 복사 버튼으로 바로 사용 |
 
 모든 변경은 Firebase 실시간 연결로 다른 기기·다른 사람 화면에 바로 반영됩니다. 상단의 점이 초록이면 연결됨, 주황이면 연결 중입니다.
@@ -137,22 +137,32 @@ Realtime Database → **규칙** 탭에서 아래 내용을 붙여넣고 **게�
 ```sh
 BASE="https://shared-office-default-rtdb.asia-southeast1.firebasedatabase.app/office/9f2c1d7ab34e05c6d8e1f0a2b3c4d5e6"
 
-# 메모 조회
+# 업무 공유 조회
 curl "$BASE/memos.json"
 
-# 메모 등록
+# 업무 공유 등록
 curl -X POST -H "Content-Type: application/json" \
   -d '{"author":"AI비서","tag":"보고","text":"보고 내용","done":false,"createdAt":1795768800000}' \
   "$BASE/memos.json"
 
 # 완료 처리 (PATCH = 일부 값만 수정)
 curl -X PATCH -H "Content-Type: application/json" \
-  -d '{"done":true}' "$BASE/memos/{메모ID}.json"
+  -d '{"done":true}' "$BASE/memos/{글ID}.json"
 
 # 답글 등록
 curl -X POST -H "Content-Type: application/json" \
   -d '{"author":"AI비서","text":"답글","createdAt":1795768800000}' \
-  "$BASE/memos/{메모ID}/replies.json"
+  "$BASE/memos/{글ID}/replies.json"
+
+# 공지 조회 / 등록
+curl "$BASE/notices.json"
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"title":"12월 업무 일정 안내","author":"AI비서","content":"공지 내용","important":false,"pinned":true,"createdAt":1795768800000,"updatedAt":1795768800000}' \
+  "$BASE/notices.json"
+
+# 상단 고정 해제 (PATCH)
+curl -X PATCH -H "Content-Type: application/json" \
+  -d '{"pinned":false,"updatedAt":1795768800000}' "$BASE/notices/{공지ID}.json"
 
 # 첨부 파일 본문 조회 (dataUrl 또는 chunks)
 curl "$BASE/memoFiles/{파일ID}.json"
@@ -169,14 +179,15 @@ memoFiles/{id}             { name, type, size, memoId, createdAt,
 memoFiles/{id}             { name, type, size, memoId, createdAt,
                              chunkCount, chunks/{0..n} }     // 512K자 넘는 파일
 images/{id}                { author, title, dataUrl, width, height, bytes, createdAt }
-surveys/{id}               { title, deadline, status, assignee, note, updatedAt }
-blogs/{id}                 { title, platform, status, author, note, updatedAt }
+notices/{id}               { title, author, content, important, pinned,
+                             createdAt, updatedAt }
 ```
 
-메모에는 첨부 파일의 **이름·형식·용량만** 들어가고 본문(Base64)은 `memoFiles`에 따로 둡니다.
+업무 공유 글에는 첨부 파일의 **이름·형식·용량만** 들어가고 본문(Base64)은 `memoFiles`에 따로 둡니다.
 그래서 `memos.json`이 가벼워 목록 로딩과 정기 확인(`check.sh`)이 느려지지 않습니다.
+공지 목록은 `pinned`가 참인 항목을 먼저, 나머지는 `createdAt` 최신순으로 정렬해 보여 줍니다.
 
-정기 확인용 `check.sh` 예시 (완료되지 않은 메모가 있을 때만 AI를 깨움):
+정기 확인용 `check.sh` 예시 (완료되지 않은 업무 공유 글이 있을 때만 AI를 깨움):
 
 ```sh
 #!/bin/sh
@@ -188,7 +199,7 @@ exit 1
 
 ## 9. 알아 둘 제한과 주의
 
-- **첨부 파일**: 한 메모에 10개까지, 파일 하나 5MB, 합계 15MB까지 올릴 수 있습니다. 이미지는 긴 변 1400px·JPEG로 자동 경량화되고, GIF·SVG·HEIC처럼 다시 그릴 수 없는 형식은 원본 그대로 저장됩니다. 문서 파일은 원본 바이트가 그대로 보관되어 다운로드하면 같은 파일이 됩니다.
+- **첨부 파일**: 한 글에 10개까지, 파일 하나 5MB, 합계 15MB까지 올릴 수 있습니다. 이미지는 긴 변 1400px·JPEG로 자동 경량화되고, GIF·SVG·HEIC처럼 다시 그릴 수 없는 형식은 원본 그대로 저장됩니다. 문서 파일은 원본 바이트가 그대로 보관되어 다운로드하면 같은 파일이 됩니다.
 - **큰 파일 저장 방식**: Base64 512K자가 넘는 파일은 `memoFiles/{id}/chunks/{0..n}`으로 나눠 씁니다(한 번에 큰 쓰기를 피해 실패 확률을 줄입니다). 조회할 때는 `memoFiles/{id}.json` 한 번이면 조각이 합쳐진 형태로 옵니다.
 - **이미지 용량**: Realtime Database 값 하나는 10MB를 넘을 수 없습니다. 그래서 업로드할 때 큰 이미지는 줄이고, 첨부 파일은 위처럼 나눠 씁니다. 저장본은 원본이 아니라 줄인 이미지이고, 페이지를 열 때 첨부 이미지 썸네일을 그때그때 읽으므로 많이 쌓이면 첫 로딩이 느려질 수 있습니다.
 - **무료 요금제(Spark)**: 저장 1GB, 월 다운로드 10GB까지 무료입니다. 이미지 200KB 기준 약 5,000장 수준입니다.
@@ -204,7 +215,7 @@ exit 1
 | "설정이 아직 필요합니다" | `firebase-config.js`가 아직 플레이스홀더입니다. 3단계를 마치세요. |
 | 페이지가 하얗고 아무것도 안 보임 | `app.js`·`style.css` 경로가 저장소 최상위와 같은지 확인하세요. |
 | 이미지 업로드가 실패함 | 사진 용량이 너무 큽니다. 더 작은 이미지로 시도하거나 캡처 후 올려 주세요. |
-| 첨부 파일이 너무 크다고 나옴 | 파일 하나 5MB, 메모당 합계 15MB까지입니다. ZIP으로 묶거나 나눠서 올려 주세요. |
+| 첨부 파일이 너무 크다고 나옴 | 파일 하나 5MB, 글당 합계 15MB까지입니다. ZIP으로 묶거나 나눠서 올려 주세요. |
 | 실시간 반영이 안 됨 | 상단 연결 점을 확인하세요. 오프라인이면 연결이 돌아올 때 자동으로 다시 붙습니다. |
 | Firebase 요금이 걱정됨 | Spark 무료 한도 내에서만 동작하며, 한도를 넘으면 해당 월말까지 쓰기가 제한될 뿐 과금되지 않습니다. |
 
