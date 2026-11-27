@@ -402,6 +402,7 @@
     });
     dom.noticeList.addEventListener('click', onNoticeClick);
     dom.noticeList.addEventListener('submit', onNoticeEditSubmit);
+    dom.noticeList.addEventListener('submit', onNoticeReplySubmit);
     dom.noticeList.addEventListener('input', onNoticeDraftInput);
     dom.noticeList.addEventListener('change', onNoticeDraftInput);
 
@@ -1655,7 +1656,13 @@
   function noticeItem(item) {
     if (state.editing.notice === item.id) return noticeEditForm(item);
 
-    return h('article', { class: `notice-item${item.pinned ? ' is-pinned' : ''}`, 'data-id': item.id },
+    const replies = Object.entries(item.replies || {})
+      .filter(([, reply]) => reply && typeof reply === 'object')
+      .map(([id, reply]) => ({ id, ...reply }))
+      .sort((a, b) => (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0));
+    const repliesOpen = state.openReplies.has(item.id);
+
+    const card = h('article', { class: `notice-item${item.pinned ? ' is-pinned' : ''}`, 'data-id': item.id },
       h('div', { class: 'notice-head' },
         item.pinned ? h('span', { class: 'notice-badge pin' }, '상단 고정') : null,
         item.important ? h('span', { class: 'notice-badge important' }, '중요') : null,
@@ -1677,10 +1684,57 @@
           'data-action': 'toggle-pin',
           'data-id': item.id
         }, item.pinned ? '고정 해제' : '상단 고정'),
+        h('button', {
+          type: 'button',
+          class: 'text-btn',
+          'data-action': 'toggle-replies',
+          'data-id': item.id
+        }, replies.length ? `답글 ${replies.length}` : '답글'),
         h('span', { class: 'spacer' }),
         h('button', { type: 'button', class: 'text-btn danger', 'data-action': 'delete-notice', 'data-id': item.id }, '삭제')
       )
     );
+
+    if (repliesOpen) card.append(noticeRepliesBlock(item, replies));
+    return card;
+  }
+
+  function noticeRepliesBlock(item, replies) {
+    const draft = state.replyDrafts[item.id] || {};
+    const box = h('div', { class: 'replies' });
+
+    if (replies.length) {
+      box.append(h('ul', { class: 'reply-list' }, replies.map((reply) => h('li', { class: 'reply' },
+        h('div', { class: 'reply-head' },
+          h('strong', {}, reply.author || '이름 없음'),
+          h('time', {}, fmtStamp(reply.createdAt)),
+          h('button', {
+            type: 'button',
+            class: 'text-btn danger tiny',
+            'data-action': 'delete-reply',
+            'data-id': item.id,
+            'data-reply': reply.id
+          }, '삭제')
+        ),
+        h('p', { class: 'reply-text' }, reply.text || '')
+      ))));
+    }
+
+    box.append(h('form', { class: 'reply-form', 'data-notice-reply-form': item.id },
+      h('input', {
+        type: 'text', class: 'input reply-author', maxlength: 20, placeholder: '작성자',
+        'data-notice-reply-author': item.id, 'aria-label': '답글 작성자',
+        value: draft.author !== undefined ? draft.author : (localStorage.getItem(LS.author) || '')
+      }),
+      h('input', {
+        type: 'text', class: 'input reply-input', maxlength: 500, placeholder: '답글을 입력하세요',
+        'data-notice-reply-text': item.id, 'aria-label': '답글 내용',
+        value: draft.text || ''
+      }),
+      h('button', { type: 'submit', class: 'btn primary small' }, '등록')
+    ));
+
+    return box;
   }
 
   function noticeEditForm(item) {
@@ -1776,6 +1830,8 @@
     if (action === 'edit-notice') startNoticeEdit(id);
     else if (action === 'cancel-notice') cancelNoticeEdit();
     else if (action === 'toggle-pin') toggleNoticePin(id);
+    else if (action === 'toggle-replies') toggleNoticeReplies(id);
+    else if (action === 'delete-reply') deleteNoticeReply(id, button.dataset.reply);
     else if (action === 'delete-notice') deleteNotice(id);
   }
 
@@ -1840,7 +1896,11 @@
   }
 
   async function deleteNotice(id) {
-    if (!window.confirm('이 공지를 삭제할까요? 되돌릴 수 없습니다.')) return;
+    const replies = Object.keys((state.notices[id] && state.notices[id].replies) || {}).length;
+    const message = replies
+      ? `이 공지와 답글 ${replies}개를 삭제할까요? 되돌릴 수 없습니다.`
+      : '이 공지를 삭제할까요? 되돌릴 수 없습니다.';
+    if (!window.confirm(message)) return;
     try {
       await childRef(`notices/${id}`).remove();
       if (state.editing.notice === id) {
@@ -1853,7 +1913,58 @@
     }
   }
 
+  function toggleNoticeReplies(id) {
+    if (state.openReplies.has(id)) state.openReplies.delete(id);
+    else state.openReplies.add(id);
+    renderNotices();
+  }
+
+  async function onNoticeReplySubmit(event) {
+    const form = event.target.closest('[data-notice-reply-form]');
+    if (!form) return;
+    event.preventDefault();
+    const id = form.getAttribute('data-notice-reply-form');
+    const authorInput = form.querySelector('[data-notice-reply-author]');
+    const textInput = form.querySelector('[data-notice-reply-text]');
+    const text = textInput.value.trim();
+    if (!text) {
+      textInput.focus();
+      toast('답글 내용을 입력해 주세요.');
+      return;
+    }
+    const author = authorInput.value.trim() || '이름 없음';
+    try {
+      await childRef(`notices/${id}/replies`).push({ author, text, createdAt: Date.now() });
+      state.openReplies.add(id);
+      state.replyDrafts[id] = { author };
+      localStorage.setItem(LS.author, author);
+      renderNotices();
+      toast('답글을 등록했습니다.');
+    } catch (err) {
+      toast(`답글을 등록하지 못했습니다: ${err.message || err}`);
+    }
+  }
+
+  async function deleteNoticeReply(noticeId, replyId) {
+    if (!window.confirm('이 답글을 삭제할까요?')) return;
+    try {
+      await childRef(`notices/${noticeId}/replies/${replyId}`).remove();
+      renderNotices();
+      toast('답글을 삭제했습니다.');
+    } catch (err) {
+      toast(`삭제하지 못했습니다: ${err.message || err}`);
+    }
+  }
+
   function onNoticeDraftInput(event) {
+    const replyField = event.target.closest('[data-notice-reply-text], [data-notice-reply-author]');
+    if (replyField) {
+      const id = replyField.dataset.noticeReplyText || replyField.dataset.noticeReplyAuthor;
+      state.replyDrafts[id] = state.replyDrafts[id] || {};
+      if (replyField.dataset.noticeReplyText) state.replyDrafts[id].text = replyField.value;
+      else state.replyDrafts[id].author = replyField.value;
+      return;
+    }
     const form = event.target.closest('[data-edit-notice]');
     if (!form) return;
     const field = event.target.getAttribute('data-field');
@@ -1934,7 +2045,7 @@
 
     root.append(codeCard(
       '공지 (curl)',
-      '상단 고정(pinned)과 중요 표시(important)를 함께 저장합니다. 목록은 상단 고정이 먼저, 나머지는 최신순입니다.',
+      '상단 고정(pinned)과 중요 표시(important)를 함께 저장하고, 공지마다 답글(replies)을 달 수 있습니다. 목록은 상단 고정이 먼저, 나머지는 최신순입니다.',
       [
         `# 공지 전체 조회 (GET)`,
         `curl "${base}/notices.json"`,
@@ -1949,7 +2060,13 @@
         `  -d '{"pinned":false,"updatedAt":1795768800000}' \\`,
         `  "${base}/notices/{공지ID}.json"`,
         ``,
-        `# 공지 삭제 (DELETE)`,
+        `# 공지 답글 조회 / 등록 (POST)`,
+        `curl "${base}/notices/{공지ID}/replies.json"`,
+        `curl -X POST -H "Content-Type: application/json" \\`,
+        `  -d '{"author":"AI비서","text":"확인했습니다.","createdAt":1795768800000}' \\`,
+        `  "${base}/notices/{공지ID}/replies.json"`,
+        ``,
+        `# 공지 삭제 (DELETE — 답글도 함께 사라집니다)`,
         `curl -X DELETE "${base}/notices/{공지ID}.json"`,
         ``,
         `# 이미지 목록`,

@@ -125,7 +125,7 @@ Realtime Database → **규칙** 탭에서 아래 내용을 붙여넣고 **게�
 |---|---|
 | **업무 공유** | 작성자·태그(지시/요청/보고/메모)를 골라 등록. **이미지·문서(HWP·PDF·XLSX·PPTX·DOCX)·압축 파일**을 첨부할 수 있고(끌어다 놓기·Ctrl+V 붙여넣기), 카드에서 썸네일로 보거나 다운로드합니다. 카드에서 바로 **수정**(인라인), **완료** 체크, **답글**, **삭제**. 필터: 전체/미완료/태그별 |
 | **이미지** | 여러 장을 한 번에 끌어다 놓거나 선택. 긴 변 1280px·JPEG로 자동 경량화해 저장. 클릭하면 크게 보기 + 다운로드 |
-| **공지** | 제목·작성자·내용을 적고 **중요 공지**·**상단 고정**을 체크해 등록. 목록은 **상단 고정 공지가 먼저, 나머지는 최신순**이며 중요 배지가 표시됩니다. 카드에서 **수정**(인라인), **상단 고정 토글**, **삭제** |
+| **공지** | 제목·작성자·내용을 적고 **중요 공지**·**상단 고정**을 체크해 등록. 목록은 **상단 고정 공지가 먼저, 나머지는 최신순**이며 중요 배지가 표시됩니다. 카드에서 **수정**(인라인), **상단 고정 토글**, **답글**, **삭제** |
 | **AI 연동** | 지금 연결된 `databaseURL`과 `ROOM_KEY` 기준 **REST API 예시**가 자동으로 표시됩니다. 복사 버튼으로 바로 사용 |
 
 모든 변경은 Firebase 실시간 연결로 다른 기기·다른 사람 화면에 바로 반영됩니다. 상단의 점이 초록이면 연결됨, 주황이면 연결 중입니다.
@@ -164,6 +164,12 @@ curl -X POST -H "Content-Type: application/json" \
 curl -X PATCH -H "Content-Type: application/json" \
   -d '{"pinned":false,"updatedAt":1795768800000}' "$BASE/notices/{공지ID}.json"
 
+# 공지 답글 조회 / 등록
+curl "$BASE/notices/{공지ID}/replies.json"
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"author":"AI비서","text":"확인했습니다.","createdAt":1795768800000}' \
+  "$BASE/notices/{공지ID}/replies.json"
+
 # 첨부 파일 본문 조회 (dataUrl 또는 chunks)
 curl "$BASE/memoFiles/{파일ID}.json"
 ```
@@ -180,7 +186,8 @@ memoFiles/{id}             { name, type, size, memoId, createdAt,
                              chunkCount, chunks/{0..n} }     // 512K자 넘는 파일
 images/{id}                { author, title, dataUrl, width, height, bytes, createdAt }
 notices/{id}               { title, author, content, important, pinned,
-                             createdAt, updatedAt }
+                             createdAt, updatedAt,
+                             replies/{replyId} }   // { author, text, createdAt }
 ```
 
 업무 공유 글에는 첨부 파일의 **이름·형식·용량만** 들어가고 본문(Base64)은 `memoFiles`에 따로 둡니다.
