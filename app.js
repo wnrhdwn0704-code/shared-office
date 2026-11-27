@@ -560,59 +560,55 @@
 
   const INLINE_FORMAT_TAG = /^(B|STRONG|I|EM|U|SPAN|FONT)$/i;
 
-  /* 방금 넣은 글자가 인라인 서식 요소 안에 들어갔으면, 그 요소를 쪼개 글자만 밖으로 꺼낸다. */
-  function liftOutOfFormatting(node, editor) {
-    while (node && node.parentNode && node.parentNode !== editor) {
-      const parent = node.parentNode;
-      if (!INLINE_FORMAT_TAG.test(parent.tagName)) return;
-      const grand = parent.parentNode;
-      if (!grand) return;
-      const after = parent.cloneNode(false);
-      let sibling = node.nextSibling;
-      while (sibling) {
-        const next = sibling.nextSibling;
-        after.appendChild(sibling);
-        sibling = next;
-      }
-      if (after.firstChild) grand.insertBefore(after, parent.nextSibling);
-      grand.insertBefore(node, parent.nextSibling);
-      if (!parent.firstChild) grand.removeChild(parent);
-    }
-  }
-
-  /* 선택 구간의 서식을 벗겨 평문으로 바꾼다 (선택 밖 글자의 서식은 그대로 둔다) */
-  function clearEditorFormat(editor, range) {
+  function rangeHtml(range) {
     const holder = document.createElement('div');
     holder.appendChild(range.cloneContents());
-    const lines = richTextToPlain(holder.innerHTML).split('\n');
-    const fragment = document.createDocumentFragment();
-    const nodes = [];
-    lines.forEach((line, index) => {
-      if (index) {
-        const br = document.createElement('br');
-        fragment.appendChild(br);
-        nodes.push(br);
-      }
-      if (line) {
-        const textNode = document.createTextNode(line);
-        fragment.appendChild(textNode);
-        nodes.push(textNode);
-      }
+    return holder.innerHTML;
+  }
+
+  /* 선택이 닿은 인라인 서식 요소를 벗긴다 (글자는 그대로 남는다) */
+  function unwrapInlineAncestors(node, editor) {
+    if (!node) return;
+    const chain = [];
+    let el = node.nodeType === 1 ? node : node.parentNode;
+    while (el && el !== editor) {
+      if (el.tagName && INLINE_FORMAT_TAG.test(el.tagName)) chain.push(el);
+      el = el.parentNode;
+    }
+    chain.forEach((element) => {
+      const parent = element.parentNode;
+      if (!parent) return;
+      while (element.firstChild) parent.insertBefore(element.firstChild, element);
+      parent.removeChild(element);
+      if (typeof parent.normalize === 'function') parent.normalize();
     });
-    range.deleteContents();
-    if (!nodes.length) return;
-    range.insertNode(fragment);
-    nodes.forEach((node) => liftOutOfFormatting(node, editor));
-    const first = nodes[0];
-    const last = nodes[nodes.length - 1];
-    const sel = window.getSelection();
-    if (sel && first.parentNode && last.parentNode) {
-      try {
-        const afterRange = document.createRange();
-        afterRange.setStartBefore(first);
-        afterRange.setEndAfter(last);
+  }
+
+  /* 선택 구간의 서식을 벗긴다. 전체를 고른 경우에는 편집기 전체를 평문으로 다시 그린다. */
+  function clearEditorFormat(editor, range) {
+    if (!editor) return;
+    const selected = richTextToPlain(rangeHtml(range));
+    const whole = richTextToPlain(editor.innerHTML);
+    if (selected && selected === whole) {
+      setEditorHtml(editor, plainToEditorHtml(whole));
+      editor.focus();
+      const end = document.createRange();
+      end.selectNodeContents(editor);
+      end.collapse(false);
+      const sel = window.getSelection();
+      if (sel) {
         sel.removeAllRanges();
-        sel.addRange(afterRange);
+        sel.addRange(end);
+      }
+      return;
+    }
+    unwrapInlineAncestors(range.startContainer, editor);
+    unwrapInlineAncestors(range.endContainer, editor);
+    const sel = window.getSelection();
+    if (sel && editor.contains(range.startContainer)) {
+      try {
+        sel.removeAllRanges();
+        sel.addRange(range);
       } catch (err) { /* 무시 */ }
     }
   }
