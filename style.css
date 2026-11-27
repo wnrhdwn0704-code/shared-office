@@ -841,7 +841,20 @@ select.input {
 }
 
 .reply-head .text-btn {
+  margin-left: 0;
+}
+
+.reply-head .text-btn:first-of-type {
   margin-left: auto;
+}
+
+.reply .memo-file-thumb {
+  width: 72px;
+  height: 72px;
+}
+
+.reply .reply-files {
+  margin-top: 6px;
 }
 
 .reply-text {
@@ -854,7 +867,37 @@ select.input {
 
 .reply-form {
   display: grid;
-  grid-template-columns: 110px minmax(0, 1fr) auto;
+  grid-template-columns: 110px minmax(0, 1fr) auto auto;
+  gap: 6px;
+}
+
+.reply-attach {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 9px;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.reply-attach-list {
+  margin-top: 2px;
+}
+
+.reply-edit {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.reply-edit .textarea {
+  min-height: 62px;
+  font-size: 13px;
+}
+
+.reply-edit-actions {
+  display: flex;
+  justify-content: flex-end;
   gap: 6px;
 }
 
@@ -1611,7 +1654,7 @@ select.input {
   }
 
   .reply-form {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
   }
 
   .reply-form .reply-author {

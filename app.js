@@ -46,10 +46,12 @@
     notices: {},
     imagesLoaded: false,
     filters: { memo: 'all' },
-    editing: { memo: null, notice: null },
+    editing: { memo: null, notice: null, reply: null },
     drafts: { memo: '', notice: {} },
     openReplies: new Set(),
     replyDrafts: {},
+    replyFiles: {},            // 글 ID → 답글에 첨부할 파일 목록
+    replyEditDrafts: {},       // 답글 ID → 수정 중인 내용
     pendingFiles: [],          // 등록 전에 고른 첨부 파일
     attachPreviews: {},        // fileId → dataUrl (카드 썸네일 캐시)
     showRoomKey: false,
@@ -379,7 +381,7 @@
 
     dom.memoList.addEventListener('click', onMemoClick);
     dom.memoList.addEventListener('change', onMemoChange);
-    dom.memoList.addEventListener('submit', onMemoReplySubmit);
+    dom.memoList.addEventListener('submit', onReplySubmit);
     dom.memoList.addEventListener('input', onMemoInput);
     dom.memoFilter.addEventListener('click', (event) => {
       const chip = event.target.closest('[data-filter]');
@@ -402,7 +404,7 @@
     });
     dom.noticeList.addEventListener('click', onNoticeClick);
     dom.noticeList.addEventListener('submit', onNoticeEditSubmit);
-    dom.noticeList.addEventListener('submit', onNoticeReplySubmit);
+    dom.noticeList.addEventListener('submit', onReplySubmit);
     dom.noticeList.addEventListener('input', onNoticeDraftInput);
     dom.noticeList.addEventListener('change', onNoticeDraftInput);
 
@@ -521,10 +523,12 @@
     state.images = {};
     state.notices = {};
     state.imagesLoaded = false;
-    state.editing = { memo: null, notice: null };
+    state.editing = { memo: null, notice: null, reply: null };
     state.drafts = { memo: '', notice: {} };
     state.openReplies.clear();
     state.replyDrafts = {};
+    state.replyFiles = {};
+    state.replyEditDrafts = {};
     state.attachPreviews = {};
     clearPendingFiles();
     showLock();
@@ -956,22 +960,37 @@
     return list.filter((item) => item && typeof item === 'object' && item.fileId);
   }
 
+  function replyAttachments(reply) {
+    const raw = reply && reply.attachments;
+    if (!raw || typeof raw !== 'object') return [];
+    const list = Array.isArray(raw) ? raw : Object.values(raw);
+    return list.filter((item) => item && typeof item === 'object' && item.fileId);
+  }
+
   function findAttachment(fileId) {
     const memos = state.memos || {};
     for (const memo of Object.values(memos)) {
       const hit = memoAttachments(memo).find((file) => file.fileId === fileId);
       if (hit) return hit;
+      const replies = (memo && memo.replies) || {};
+      for (const reply of Object.values(replies)) {
+        const inReply = replyAttachments(reply).find((file) => file.fileId === fileId);
+        if (inReply) return inReply;
+      }
     }
     return null;
   }
 
   function attachmentBlock(memo) {
-    const files = memoAttachments(memo);
+    return attachmentsBlock(memoAttachments(memo));
+  }
+
+  function attachmentsBlock(files, extraClass) {
     if (!files.length) return null;
 
     const images = files.filter((file) => isImageType(file.type));
     const others = files.filter((file) => !isImageType(file.type));
-    const box = h('div', { class: 'memo-files' });
+    const box = h('div', { class: `memo-files${extraClass ? ` ${extraClass}` : ''}` });
 
     if (images.length) {
       const grid = h('div', { class: 'memo-file-grid' });
@@ -1200,46 +1219,258 @@
       )
     );
 
-    if (repliesOpen) card.append(replyBlock(memo, replies));
+    if (repliesOpen) card.append(repliesBlock('memos', memo, replies));
     return card;
   }
 
-  function replyBlock(memo, replies) {
-    const draft = state.replyDrafts[memo.id] || {};
-    const box = h('div', { class: 'replies' });
+  function renderFor(node) {
+    if (node === 'notices') renderNotices();
+    else renderMemos();
+  }
 
-    if (replies.length) {
-      box.append(h('ul', { class: 'reply-list' }, replies.map((reply) => h('li', { class: 'reply' },
-        h('div', { class: 'reply-head' },
-          h('strong', {}, reply.author || '이름 없음'),
-          h('time', {}, fmtStamp(reply.createdAt)),
+  function replyEditDraft(reply) {
+    const draft = state.replyEditDrafts[reply.id];
+    return draft !== undefined ? draft : (reply.text || '');
+  }
+
+  function isEditingReply(node, parentId, replyId) {
+    const target = state.editing.reply;
+    return !!target && target.node === node && target.parentId === parentId && target.replyId === replyId;
+  }
+
+  function replyItem(node, parent, reply) {
+    const editing = isEditingReply(node, parent.id, reply.id);
+    const files = replyAttachments(reply);
+
+    const head = h('div', { class: 'reply-head' },
+      h('strong', {}, reply.author || '이름 없음'),
+      h('time', {}, fmtStamp(reply.createdAt)),
+      reply.updatedAt && Number(reply.updatedAt) !== Number(reply.createdAt)
+        ? h('time', {}, `수정 ${fmtStamp(reply.updatedAt)}`)
+        : null,
+      h('button', {
+        type: 'button',
+        class: 'text-btn tiny',
+        'data-action': 'edit-reply',
+        'data-node': node,
+        'data-id': parent.id,
+        'data-reply': reply.id
+      }, '수정'),
+      h('button', {
+        type: 'button',
+        class: 'text-btn danger tiny',
+        'data-action': 'delete-reply',
+        'data-node': node,
+        'data-id': parent.id,
+        'data-reply': reply.id
+      }, '삭제')
+    );
+
+    const body = editing
+      ? h('div', { class: 'reply-edit' },
+          h('textarea', {
+            class: 'input textarea',
+            rows: 2,
+            maxlength: 2000,
+            'data-reply-edit-text': reply.id,
+            'aria-label': '답글 내용 수정'
+          }, replyEditDraft(reply)),
+          h('div', { class: 'reply-edit-actions' },
+            h('button', { type: 'button', class: 'btn ghost small', 'data-action': 'cancel-reply-edit' }, '취소'),
+            h('button', {
+              type: 'button',
+              class: 'btn primary small',
+              'data-action': 'save-reply-edit',
+              'data-node': node,
+              'data-id': parent.id,
+              'data-reply': reply.id
+            }, '저장')
+          )
+        )
+      : h('p', { class: 'reply-text' }, reply.text || '');
+
+    return h('li', { class: 'reply' }, head, body, attachmentsBlock(files, 'reply-files'));
+  }
+
+  function replyPendingBlock(memoId, pending) {
+    return h('ul', { class: 'attach-list reply-attach-list', 'aria-label': '답글에 첨부할 파일' },
+      pending.map((entry, index) => {
+        const file = entry.file;
+        return h('li', { class: 'attach-item' },
+          h('span', { class: 'attach-thumb' },
+            entry.previewUrl
+              ? h('img', { src: entry.previewUrl, alt: '' })
+              : h('span', { class: 'attach-ext' }, fileExt(file.name))
+          ),
+          h('span', { class: 'attach-body' },
+            h('span', { class: 'attach-name', title: file.name }, file.name),
+            h('span', { class: 'attach-size' }, fmtBytes(file.size))
+          ),
           h('button', {
             type: 'button',
             class: 'text-btn danger tiny',
-            'data-action': 'delete-reply',
-            'data-id': memo.id,
-            'data-reply': reply.id
-          }, '삭제')
-        ),
-        h('p', { class: 'reply-text' }, reply.text || '')
-      ))));
+            'data-action': 'reply-remove-file',
+            'data-id': memoId,
+            'data-index': String(index),
+            'aria-label': `${file.name} 첨부 빼기`
+          }, '빼기')
+        );
+      })
+    );
+  }
+
+  function repliesBlock(node, parent, replies) {
+    const draft = state.replyDrafts[parent.id] || {};
+    const box = h('div', { class: 'replies' });
+
+    if (replies.length) {
+      box.append(h('ul', { class: 'reply-list' }, replies.map((reply) => replyItem(node, parent, reply))));
     }
 
-    box.append(h('form', { class: 'reply-form', 'data-reply-form': memo.id },
+    const form = h('form', {
+      class: 'reply-form',
+      'data-reply-form': parent.id,
+      'data-reply-node': node
+    },
       h('input', {
         type: 'text', class: 'input reply-author', maxlength: 20, placeholder: '작성자',
-        'data-reply-author': memo.id, 'aria-label': '답글 작성자',
+        'data-reply-author': parent.id, 'aria-label': '답글 작성자',
         value: draft.author !== undefined ? draft.author : (localStorage.getItem(LS.author) || '')
       }),
       h('input', {
         type: 'text', class: 'input reply-input', maxlength: 500, placeholder: '답글을 입력하세요',
-        'data-reply-text': memo.id, 'aria-label': '답글 내용',
+        'data-reply-text': parent.id, 'aria-label': '답글 내용',
         value: draft.text || ''
-      }),
-      h('button', { type: 'submit', class: 'btn primary small' }, '등록')
-    ));
+      })
+    );
+
+    if (node === 'memos') {
+      form.append(
+        h('button', {
+          type: 'button',
+          class: 'icon-btn reply-attach',
+          'data-action': 'reply-attach',
+          'data-id': parent.id,
+          'aria-label': '답글에 파일 첨부',
+          title: '파일 첨부'
+        }, '📎'),
+        h('input', {
+          type: 'file', multiple: true, class: 'sr-only',
+          'data-reply-files': parent.id, 'aria-label': '답글 첨부 파일 선택'
+        })
+      );
+    }
+    form.append(h('button', { type: 'submit', class: 'btn primary small' }, '등록'));
+    box.append(form);
+
+    if (node === 'memos') {
+      const pending = state.replyFiles[parent.id] || [];
+      if (pending.length) box.append(replyPendingBlock(parent.id, pending));
+    }
 
     return box;
+  }
+
+  /* ---------- 답글 첨부: 선택 · 해제 ---------- */
+
+  function validateFileList(list) {
+    if (!list.length) return '';
+    if (list.length > MAX_ATTACH_COUNT) {
+      return `파일은 한 번에 ${MAX_ATTACH_COUNT}개까지 첨부할 수 있습니다.`;
+    }
+    const tooBig = list.find((entry) => Number(entry.file.size) > MAX_FILE_BYTES);
+    if (tooBig) {
+      return `'${tooBig.file.name}'이(가) ${fmtBytes(tooBig.file.size)}입니다. 파일 한 개는 ${fmtBytes(MAX_FILE_BYTES)}까지 올릴 수 있어요.`;
+    }
+    const total = list.reduce((sum, entry) => sum + (Number(entry.file.size) || 0), 0);
+    if (total > MAX_ATTACH_TOTAL_BYTES) {
+      return `첨부 합계가 ${fmtBytes(total)}입니다. 한 번에 ${fmtBytes(MAX_ATTACH_TOTAL_BYTES)}까지 올릴 수 있어요.`;
+    }
+    return '';
+  }
+
+  function addReplyFiles(memoId, fileList) {
+    const incoming = Array.from(fileList || []).filter((file) => file && typeof file === 'object');
+    if (!incoming.length) return;
+    const list = state.replyFiles[memoId] || (state.replyFiles[memoId] = []);
+    let skipped = 0;
+
+    for (const file of incoming) {
+      if (list.length >= MAX_ATTACH_COUNT) {
+        skipped += 1;
+        continue;
+      }
+      const previewable = isImageType(file.type) && !/^image\/svg/i.test(file.type || '');
+      list.push({ file, previewUrl: previewable ? URL.createObjectURL(file) : '' });
+    }
+
+    renderMemos();
+    const problem = validateFileList(list);
+    if (problem) toast(problem);
+    else if (skipped) toast(`한 번에 ${MAX_ATTACH_COUNT}개까지 첨부할 수 있습니다. ${skipped}개는 빠졌습니다.`);
+  }
+
+  function removeReplyFile(memoId, index) {
+    const list = state.replyFiles[memoId];
+    if (!list) return;
+    const entry = list[index];
+    if (!entry) return;
+    if (entry.previewUrl) URL.revokeObjectURL(entry.previewUrl);
+    list.splice(index, 1);
+    if (!list.length) delete state.replyFiles[memoId];
+    renderMemos();
+  }
+
+  function clearReplyFiles(memoId) {
+    const list = state.replyFiles[memoId];
+    if (!list) return;
+    list.forEach((entry) => {
+      if (entry.previewUrl) URL.revokeObjectURL(entry.previewUrl);
+    });
+    delete state.replyFiles[memoId];
+  }
+
+  /* ---------- 답글 수정 ---------- */
+
+  function startReplyEdit(node, parentId, replyId) {
+    state.editing.reply = { node, parentId, replyId };
+    delete state.replyEditDrafts[replyId];
+    renderFor(node);
+    const box = document.querySelector(`[data-reply-edit-text="${replyId}"]`);
+    if (box) {
+      box.focus();
+      box.setSelectionRange(box.value.length, box.value.length);
+    }
+  }
+
+  function cancelReplyEdit() {
+    const target = state.editing.reply;
+    if (!target) return;
+    delete state.replyEditDrafts[target.replyId];
+    state.editing.reply = null;
+    renderFor(target.node);
+  }
+
+  async function saveReplyEdit() {
+    const target = state.editing.reply;
+    if (!target) return;
+    const field = document.querySelector(`[data-reply-edit-text="${target.replyId}"]`);
+    const text = field ? field.value.trim() : '';
+    if (!text) {
+      toast('답글 내용을 입력해 주세요.');
+      if (field) field.focus();
+      return;
+    }
+    try {
+      await childRef(`${target.node}/${target.parentId}/replies/${target.replyId}`)
+        .update({ text, updatedAt: Date.now() });
+      delete state.replyEditDrafts[target.replyId];
+      state.editing.reply = null;
+      renderFor(target.node);
+      toast('답글을 수정했습니다.');
+    } catch (err) {
+      toast(`수정하지 못했습니다: ${err.message || err}`);
+    }
   }
 
   function onMemoClick(event) {
@@ -1251,20 +1482,41 @@
     else if (action === 'cancel-edit') cancelMemoEdit();
     else if (action === 'toggle-replies') toggleReplies(id);
     else if (action === 'delete') deleteMemo(id);
-    else if (action === 'delete-reply') deleteReply(id, button.dataset.reply);
+    else if (action === 'edit-reply') startReplyEdit('memos', id, button.dataset.reply);
+    else if (action === 'cancel-reply-edit') cancelReplyEdit();
+    else if (action === 'save-reply-edit') saveReplyEdit();
+    else if (action === 'delete-reply') deleteReply('memos', id, button.dataset.reply);
+    else if (action === 'reply-attach') openReplyFilePicker(button);
+    else if (action === 'reply-remove-file') removeReplyFile(id, Number(button.dataset.index));
     else if (action === 'download-file') downloadMemoFile(button.dataset.fileId, button);
     else if (action === 'preview-file') openMemoFilePreview(button.dataset.fileId);
   }
 
   function onMemoChange(event) {
+    const fileInput = event.target.closest('[data-reply-files]');
+    if (fileInput) {
+      addReplyFiles(fileInput.getAttribute('data-reply-files'), fileInput.files);
+      fileInput.value = '';
+      return;
+    }
     const input = event.target.closest('[data-action="toggle"]');
     if (!input) return;
     updateMemo(input.dataset.id, { done: input.checked, updatedAt: Date.now() }, '완료 상태를 저장했습니다.');
   }
 
+  function openReplyFilePicker(button) {
+    const form = button.closest('form');
+    const input = form && form.querySelector('[data-reply-files]');
+    if (input) input.click();
+  }
+
   function onMemoInput(event) {
     if (event.target.matches('[data-edit-text]')) {
       state.drafts.memo = event.target.value;
+      return;
+    }
+    if (event.target.matches('[data-reply-edit-text]')) {
+      state.replyEditDrafts[event.target.getAttribute('data-reply-edit-text')] = event.target.value;
       return;
     }
     if (event.target.matches('[data-reply-text]') || event.target.matches('[data-reply-author]')) {
@@ -1275,29 +1527,60 @@
     }
   }
 
-  async function onMemoReplySubmit(event) {
+  async function onReplySubmit(event) {
     const form = event.target.closest('[data-reply-form]');
     if (!form) return;
     event.preventDefault();
+    const node = form.getAttribute('data-reply-node') || 'memos';
     const id = form.getAttribute('data-reply-form');
     const authorInput = form.querySelector('[data-reply-author]');
     const textInput = form.querySelector('[data-reply-text]');
     const text = textInput.value.trim();
+    const pending = node === 'memos' ? (state.replyFiles[id] || []).slice() : [];
+    const submitButton = form.querySelector('button[type="submit"]');
+
     if (!text) {
       textInput.focus();
       toast('답글 내용을 입력해 주세요.');
       return;
     }
+    const problem = validateFileList(pending);
+    if (problem) {
+      toast(problem);
+      return;
+    }
+
     const author = authorInput.value.trim() || '이름 없음';
+    const uploadedIds = [];
+    const attachments = [];
+    if (submitButton) submitButton.disabled = true;
     try {
-      await childRef(`memos/${id}/replies`).push({ author, text, createdAt: Date.now() });
+      for (let index = 0; index < pending.length; index += 1) {
+        if (submitButton) submitButton.textContent = `올리는 중 ${index + 1}/${pending.length}`;
+        const saved = await saveAttachmentFile(pending[index].file, id);
+        uploadedIds.push(saved.summary.fileId);
+        attachments.push(saved.summary);
+      }
+      const reply = { author, text, createdAt: Date.now() };
+      if (attachments.length) reply.attachments = attachments;
+      await childRef(`${node}/${id}/replies`).push(reply);
+      clearReplyFiles(id);
       state.openReplies.add(id);
       state.replyDrafts[id] = { author };
       localStorage.setItem(LS.author, author);
-      renderMemos();
-      toast('답글을 등록했습니다.');
+      renderFor(node);
+      toast(attachments.length
+        ? `답글과 파일 ${attachments.length}개를 등록했습니다.`
+        : '답글을 등록했습니다.');
     } catch (err) {
+      if (uploadedIds.length) await removeMemoFiles(uploadedIds);
       toast(`답글을 등록하지 못했습니다: ${err.message || err}`);
+      renderFor(node);
+    } finally {
+      if (submitButton) {
+        submitButton.disabled = false;
+        submitButton.textContent = '등록';
+      }
     }
   }
 
@@ -1355,16 +1638,23 @@
   }
 
   async function deleteMemo(id) {
-    const files = memoAttachments(state.memos[id]);
-    const message = files.length
-      ? `이 글과 답글, 첨부 파일 ${files.length}개를 삭제할까요? 되돌릴 수 없습니다.`
+    const memo = state.memos[id];
+    const files = memoAttachments(memo);
+    const replyFiles = [];
+    Object.values((memo && memo.replies) || {}).forEach((reply) => {
+      replyAttachments(reply).forEach((file) => replyFiles.push(file));
+    });
+    const totalFiles = files.length + replyFiles.length;
+    const message = totalFiles
+      ? `이 글과 답글, 첨부 파일 ${totalFiles}개를 삭제할까요? 되돌릴 수 없습니다.`
       : '이 글과 답글을 삭제할까요? 되돌릴 수 없습니다.';
     if (!window.confirm(message)) return;
     try {
       await childRef(`memos/${id}`).remove();
-      if (files.length) {
-        await removeMemoFiles(files.map((file) => file.fileId));
-        files.forEach((file) => { delete state.attachPreviews[file.fileId]; });
+      clearReplyFiles(id);
+      if (totalFiles) {
+        await removeMemoFiles(files.concat(replyFiles).map((file) => file.fileId));
+        files.concat(replyFiles).forEach((file) => { delete state.attachPreviews[file.fileId]; });
       }
       toast('글을 삭제했습니다.');
     } catch (err) {
@@ -1372,10 +1662,22 @@
     }
   }
 
-  async function deleteReply(memoId, replyId) {
-    if (!window.confirm('이 답글을 삭제할까요?')) return;
+  async function deleteReply(node, parentId, replyId) {
+    const parent = node === 'notices' ? state.notices[parentId] : state.memos[parentId];
+    const reply = parent && parent.replies ? parent.replies[replyId] : null;
+    const files = replyAttachments(reply);
+    const message = files.length
+      ? `이 답글과 첨부 파일 ${files.length}개를 삭제할까요? 되돌릴 수 없습니다.`
+      : '이 답글을 삭제할까요?';
+    if (!window.confirm(message)) return;
     try {
-      await childRef(`memos/${memoId}/replies/${replyId}`).remove();
+      await childRef(`${node}/${parentId}/replies/${replyId}`).remove();
+      if (files.length) {
+        await removeMemoFiles(files.map((file) => file.fileId));
+        files.forEach((file) => { delete state.attachPreviews[file.fileId]; });
+      }
+      if (state.editing.reply && state.editing.reply.replyId === replyId) state.editing.reply = null;
+      renderFor(node);
       toast('답글을 삭제했습니다.');
     } catch (err) {
       toast(`삭제하지 못했습니다: ${err.message || err}`);
@@ -1695,46 +1997,8 @@
       )
     );
 
-    if (repliesOpen) card.append(noticeRepliesBlock(item, replies));
+    if (repliesOpen) card.append(repliesBlock('notices', item, replies));
     return card;
-  }
-
-  function noticeRepliesBlock(item, replies) {
-    const draft = state.replyDrafts[item.id] || {};
-    const box = h('div', { class: 'replies' });
-
-    if (replies.length) {
-      box.append(h('ul', { class: 'reply-list' }, replies.map((reply) => h('li', { class: 'reply' },
-        h('div', { class: 'reply-head' },
-          h('strong', {}, reply.author || '이름 없음'),
-          h('time', {}, fmtStamp(reply.createdAt)),
-          h('button', {
-            type: 'button',
-            class: 'text-btn danger tiny',
-            'data-action': 'delete-reply',
-            'data-id': item.id,
-            'data-reply': reply.id
-          }, '삭제')
-        ),
-        h('p', { class: 'reply-text' }, reply.text || '')
-      ))));
-    }
-
-    box.append(h('form', { class: 'reply-form', 'data-notice-reply-form': item.id },
-      h('input', {
-        type: 'text', class: 'input reply-author', maxlength: 20, placeholder: '작성자',
-        'data-notice-reply-author': item.id, 'aria-label': '답글 작성자',
-        value: draft.author !== undefined ? draft.author : (localStorage.getItem(LS.author) || '')
-      }),
-      h('input', {
-        type: 'text', class: 'input reply-input', maxlength: 500, placeholder: '답글을 입력하세요',
-        'data-notice-reply-text': item.id, 'aria-label': '답글 내용',
-        value: draft.text || ''
-      }),
-      h('button', { type: 'submit', class: 'btn primary small' }, '등록')
-    ));
-
-    return box;
   }
 
   function noticeEditForm(item) {
@@ -1831,7 +2095,10 @@
     else if (action === 'cancel-notice') cancelNoticeEdit();
     else if (action === 'toggle-pin') toggleNoticePin(id);
     else if (action === 'toggle-replies') toggleNoticeReplies(id);
-    else if (action === 'delete-reply') deleteNoticeReply(id, button.dataset.reply);
+    else if (action === 'edit-reply') startReplyEdit('notices', id, button.dataset.reply);
+    else if (action === 'cancel-reply-edit') cancelReplyEdit();
+    else if (action === 'save-reply-edit') saveReplyEdit();
+    else if (action === 'delete-reply') deleteReply('notices', id, button.dataset.reply);
     else if (action === 'delete-notice') deleteNotice(id);
   }
 
@@ -1919,50 +2186,16 @@
     renderNotices();
   }
 
-  async function onNoticeReplySubmit(event) {
-    const form = event.target.closest('[data-notice-reply-form]');
-    if (!form) return;
-    event.preventDefault();
-    const id = form.getAttribute('data-notice-reply-form');
-    const authorInput = form.querySelector('[data-notice-reply-author]');
-    const textInput = form.querySelector('[data-notice-reply-text]');
-    const text = textInput.value.trim();
-    if (!text) {
-      textInput.focus();
-      toast('답글 내용을 입력해 주세요.');
+  function onNoticeDraftInput(event) {
+    if (event.target.matches('[data-reply-edit-text]')) {
+      state.replyEditDrafts[event.target.getAttribute('data-reply-edit-text')] = event.target.value;
       return;
     }
-    const author = authorInput.value.trim() || '이름 없음';
-    try {
-      await childRef(`notices/${id}/replies`).push({ author, text, createdAt: Date.now() });
-      state.openReplies.add(id);
-      state.replyDrafts[id] = { author };
-      localStorage.setItem(LS.author, author);
-      renderNotices();
-      toast('답글을 등록했습니다.');
-    } catch (err) {
-      toast(`답글을 등록하지 못했습니다: ${err.message || err}`);
-    }
-  }
-
-  async function deleteNoticeReply(noticeId, replyId) {
-    if (!window.confirm('이 답글을 삭제할까요?')) return;
-    try {
-      await childRef(`notices/${noticeId}/replies/${replyId}`).remove();
-      renderNotices();
-      toast('답글을 삭제했습니다.');
-    } catch (err) {
-      toast(`삭제하지 못했습니다: ${err.message || err}`);
-    }
-  }
-
-  function onNoticeDraftInput(event) {
-    const replyField = event.target.closest('[data-notice-reply-text], [data-notice-reply-author]');
-    if (replyField) {
-      const id = replyField.dataset.noticeReplyText || replyField.dataset.noticeReplyAuthor;
+    if (event.target.matches('[data-reply-text]') || event.target.matches('[data-reply-author]')) {
+      const id = event.target.dataset.replyText || event.target.dataset.replyAuthor;
       state.replyDrafts[id] = state.replyDrafts[id] || {};
-      if (replyField.dataset.noticeReplyText) state.replyDrafts[id].text = replyField.value;
-      else state.replyDrafts[id].author = replyField.value;
+      if (event.target.matches('[data-reply-text]')) state.replyDrafts[id].text = event.target.value;
+      else state.replyDrafts[id].author = event.target.value;
       return;
     }
     const form = event.target.closest('[data-edit-notice]');
@@ -2033,10 +2266,15 @@
         `  -d '{"done":true,"updatedAt":1795768800000}' \\`,
         `  "${base}/memos/{글ID}.json"`,
         ``,
-        `# 4) 답글 등록 (POST)`,
+        `# 4) 답글 등록 (POST — 이미지·파일은 attachments에 요약만)`,
         `curl -X POST -H "Content-Type: application/json" \\`,
-        `  -d '{"author":"AI비서","text":"답글 내용","createdAt":1795768800000}' \\`,
+        `  -d '{"author":"AI비서","text":"답글 내용","createdAt":1795768800000,"attachments":[{"fileId":"-N...","name":"시안.jpg","type":"image/jpeg","size":182000}]}' \\`,
         `  "${base}/memos/{글ID}/replies.json"`,
+        ``,
+        `# 4-1) 답글 수정 (PATCH — 내용만)`,
+        `curl -X PATCH -H "Content-Type: application/json" \\`,
+        `  -d '{"text":"고친 답글 내용","updatedAt":1795768800000}' \\`,
+        `  "${base}/memos/{글ID}/replies/{답글ID}.json"`,
         ``,
         `# 5) 삭제 (DELETE)`,
         `curl -X DELETE "${base}/memos/{글ID}.json"`
@@ -2066,6 +2304,11 @@
         `  -d '{"author":"AI비서","text":"확인했습니다.","createdAt":1795768800000}' \\`,
         `  "${base}/notices/{공지ID}/replies.json"`,
         ``,
+        `# 공지 답글 수정 (PATCH — 내용만)`,
+        `curl -X PATCH -H "Content-Type: application/json" \\`,
+        `  -d '{"text":"고친 답글 내용","updatedAt":1795768800000}' \\`,
+        `  "${base}/notices/{공지ID}/replies/{답글ID}.json"`,
+        ``,
         `# 공지 삭제 (DELETE — 답글도 함께 사라집니다)`,
         `curl -X DELETE "${base}/notices/{공지ID}.json"`,
         ``,
@@ -2076,7 +2319,7 @@
 
     root.append(codeCard(
       '업무 공유 첨부 파일 (memoFiles)',
-      '첨부 파일 본문은 글과 분리해 memoFiles에 둡니다. 글에는 이름·형식·용량만 남아 목록과 정기 확인이 가볍습니다. 5MB를 넘는 파일은 512K자씩 chunks로 나뉘어 저장됩니다.',
+      '첨부 파일 본문은 글·답글과 분리해 memoFiles에 둡니다. 글과 답글에는 이름·형식·용량만 남아 목록과 정기 확인이 가볍습니다. 5MB를 넘는 파일은 512K자씩 chunks로 나뉘어 저장됩니다. 답글 첨부도 같은 memoFiles/{fileId}에 저장하고 답글 객체에는 attachments 요약만 둡니다.',
       [
         `# 글에는 첨부 메타데이터만 들어갑니다`,
         `curl "${base}/memos.json"`,
